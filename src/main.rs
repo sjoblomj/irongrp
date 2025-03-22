@@ -60,7 +60,7 @@ impl fmt::Display for LogLevel {
 fn log(level: LogLevel, message: &str) {
     let level_order = |lvl: &LogLevel| match lvl {
         LogLevel::Debug => 0,
-        LogLevel::Info => 1,
+        LogLevel::Info  => 1,
         LogLevel::Error => 2,
     };
 
@@ -114,8 +114,8 @@ fn read_grp_header(file: &mut File) -> Result<GrpHeader> {
 
 // Reads all GRP frame headers
 fn read_grp_frames(file: &mut File, frame_count: usize) -> Result<Vec<GrpFrame>> {
-    let mut frames = Vec::new();
     let pos = file.stream_position()?;
+    let mut frames = Vec::new();
     for i in 0..frame_count {
         file.seek(SeekFrom::Start(pos + (i * 8) as u64))?;
         let mut buf = [0u8; 8];
@@ -314,6 +314,10 @@ fn main() -> Result<()> {
     let args = Args::parse();
     // Set the global log level
     LOG_LEVEL.set(args.log_level.clone()).expect("Failed to set log level");
+    if !args.tiled && args.max_width.is_some() {
+        log(LogLevel::Error, "The 'max-width' argument is only applicable when using the 'tiled' argument.");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+    }
 
     // Ensure output directory exists
     fs::create_dir_all(&args.output_dir)?;
