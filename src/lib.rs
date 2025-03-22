@@ -3,7 +3,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result};
 use std::sync::OnceLock;
 use clap::{Parser, ValueEnum};
-use image::{ImageBuffer, Rgba};
+
+pub mod png;
 
 pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 
@@ -219,90 +220,4 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
     }
 
     line_pixels
-}
-
-pub fn render_and_save_frames_to_png(
-    frames: &[GrpFrame],
-    palette: &[[u8; 3]],
-    max_frame_width: u32,
-    max_frame_height: u32,
-    args: &Args,
-) -> Result<()> {
-    if args.tiled {
-        let mut cols = ((frames.len() as f64).sqrt()).floor() as u32;
-        log(LogLevel::Debug, &format!(
-            "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
-            cols,
-            max_frame_width,
-            max_frame_height,
-            args.max_width.unwrap_or(0)
-        ));
-
-        if let Some(max_w) = args.max_width {
-            if max_w > max_frame_width && cols * max_frame_width > max_w {
-                cols = (max_w as f64 / max_frame_width as f64).floor() as u32;
-                log(LogLevel::Debug, &format!("Adjusted number of columns to: {}", cols));
-            }
-        }
-
-        let canvas_width = cols * max_frame_width;
-        let canvas_height = (frames.len() as f64 / cols as f64).ceil() as u32 * max_frame_height;
-
-        log(LogLevel::Debug, &format!("Canvas size: {}x{}", canvas_width, canvas_height));
-
-        let mut img = ImageBuffer::from_pixel(canvas_width, canvas_height, Rgba([0, 0, 0, 0]));
-
-        for (i, frame) in frames.iter().enumerate() {
-            let col = (i as u32) % cols;
-            let row = (i as u32) / cols;
-
-            let base_x = col * max_frame_width + frame.x_offset as u32;
-            let base_y = row * max_frame_height + frame.y_offset as u32;
-
-            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparency);
-        }
-
-        let output_path = format!("{}/all_frames.png", args.output_dir);
-        img.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-        log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
-
-    } else {
-        for (i, frame) in frames.iter().enumerate() {
-            let mut img = ImageBuffer::from_pixel(max_frame_width, max_frame_height, Rgba([0, 0, 0, 0]));
-            let base_x = frame.x_offset as u32;
-            let base_y = frame.y_offset as u32;
-
-            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparency);
-
-            let output_path = format!("{}/frame_{:03}.png", args.output_dir, i);
-            img.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            log(LogLevel::Info, &format!("Saved frame {} to {}", i, output_path));
-        }
-    }
-
-    Ok(())
-}
-
-
-fn draw_frame_into_image(
-    img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    frame: &GrpFrame,
-    palette: &[[u8; 3]],
-    base_x: u32,
-    base_y: u32,
-    use_transparency: bool,
-) {
-    for y in 0..frame.height as u32 {
-        for x in 0..frame.width as u32 {
-            let idx = (y * frame.width as u32 + x) as usize;
-            let palette_index = frame.pixels[idx] as usize;
-
-            if use_transparency && palette_index == 0 {
-                continue;
-            }
-
-            let color = palette[palette_index];
-            img.put_pixel(base_x + x, base_y + y, Rgba([color[0], color[1], color[2], 255]));
-        }
-    }
 }

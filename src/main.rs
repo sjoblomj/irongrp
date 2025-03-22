@@ -1,5 +1,6 @@
 use clap::Parser;
-use irongrp::{render_and_save_frames_to_png, read_palette, read_grp_header, read_grp_frames, LOG_LEVEL, log, LogLevel, Args};
+use irongrp::png::render_and_save_frames_to_png;
+use irongrp::{read_palette, read_grp_header, read_grp_frames, LOG_LEVEL, log, LogLevel, Args};
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
