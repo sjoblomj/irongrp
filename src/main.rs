@@ -63,13 +63,14 @@ struct GrpHeader {
     max_height: u16,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct GrpFrame {
     x_offset: u8,
     y_offset: u8,
     width: u8,
     height: u8,
     image_data_offset: u32,
+    pixels: Vec<u8>,
 }
 
 /// Reads a PAL file (StarCraft palette format)
@@ -97,46 +98,56 @@ fn read_grp_header(file: &mut File) -> Result<GrpHeader> {
 // Reads all GRP frame headers
 fn read_grp_frames(file: &mut File, frame_count: usize) -> Result<Vec<GrpFrame>> {
     let mut frames = Vec::new();
+    let pos = file.stream_position()?;
     for i in 0..frame_count {
+        file.seek(SeekFrom::Start(pos + (i * 8) as u64))?;
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
 
+        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let pixels = read_image_data(file, buf[2] as usize, buf[3] as usize, image_data_offset as u64);
         let grp_frame = GrpFrame {
             x_offset: buf[0],
             y_offset: buf[1],
             width:    buf[2],
             height:   buf[3],
-            image_data_offset: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            image_data_offset: image_data_offset,
+            pixels:   pixels?,
         };
-        frames.push(grp_frame);
-        log(LogLevel::Debug, &format!("Read GRP Frame {}. x-offset: {}, y-offset: {}, width: {}, height: {}, image-data-offset: {}", i, grp_frame.x_offset, grp_frame.y_offset, grp_frame.width, grp_frame.height, grp_frame.image_data_offset));
+        frames.push(grp_frame.clone());
+        log(LogLevel::Debug, &format!("Read GRP Frame {}. x-offset: {}, y-offset: {}, width: {}, height: {}, image-data-offset: {}, number of pixels: {}", i, grp_frame.x_offset, grp_frame.y_offset, grp_frame.width, grp_frame.height, grp_frame.image_data_offset, grp_frame.pixels.len()));
     }
     Ok(frames)
 }
 
 // Reads row offsets and decodes image data
-fn read_image_data(file: &mut File, frame: &GrpFrame) -> Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(frame.image_data_offset as u64))?;
+fn read_image_data(
+    file: &mut File,
+    width: usize,
+    height: usize,
+    image_data_offset: u64,
+) -> Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(image_data_offset))?;
 
-    let mut row_offsets = Vec::with_capacity(frame.height as usize);
-    for _ in 0..frame.height {
+    let mut row_offsets = Vec::with_capacity(height);
+    for _ in 0..height {
         let mut row_offset_buf = [0u8; 2];
         file.read_exact(&mut row_offset_buf)?;
         let row_offset = u16::from_le_bytes(row_offset_buf) as u64;
         row_offsets.push(row_offset);
     }
 
-    let mut pixels = vec![0; (frame.width as usize) * (frame.height as usize)];
+    let mut pixels = vec![0; width * height];
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
-        file.seek(SeekFrom::Start(frame.image_data_offset as u64 + row_offset))?;
-        log(LogLevel::Debug, &format!("Reading frame row of width {} from offset {}", frame.width, frame.image_data_offset as u64 + row_offset));
+        file.seek(SeekFrom::Start(image_data_offset + row_offset))?;
+        log(LogLevel::Debug, &format!("Reading frame row of width {} from offset {}", width, image_data_offset + row_offset));
 
         let mut row_data = Vec::new();
         file.read_to_end(&mut row_data)?;
 
-        let decoded_row = decode_grp_rle_row(&row_data, frame.width as usize);
-        let start = row * frame.width as usize;
+        let decoded_row = decode_grp_rle_row(&row_data, width);
+        let start = row * width;
         pixels[start..start + decoded_row.len()].copy_from_slice(&decoded_row);
     }
 
@@ -158,7 +169,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
             x += skip;
             log(LogLevel::Debug, &format!("Transparent byte. Skipping {} pixels.", skip));
 
-        } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same color X times) 
+        } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same color X times)
             let run_length  = (control_byte & 0x3F) as usize;
             if data_offset >= line_data.len() { // Safety check
                 log(LogLevel::Error, &format!("Run-length encoding error: Requested offset ({}) is greater than line length ({}).", data_offset, line_data.len()));
@@ -197,7 +208,6 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 
 fn save_frame_as_png(
     frame: &GrpFrame,
-    pixels: &[u8],
     palette: &[[u8; 3]],
     output_path: &str,
     max_width: u32,
@@ -211,7 +221,7 @@ fn save_frame_as_png(
 
     for y in 0..frame.height as u32 {
         for x in 0..frame.width as u32 {
-            let index = pixels[(y * frame.width as u32 + x) as usize] as usize;
+            let index = frame.pixels[(y * frame.width as u32 + x) as usize] as usize;
             let color = palette[index];
 
             img.put_pixel(x + x_offset, y + y_offset, Rgba([color[0], color[1], color[2], 255]));
@@ -241,10 +251,8 @@ fn main() -> Result<()> {
     let frames = read_grp_frames(&mut file, header.frame_count as usize)?;
 
     for (i, frame) in frames.iter().enumerate() {
-        let pixels = read_image_data(&mut file, frame)?;
-
         let output_file = format!("{}/frame_{:03}.png", args.output_dir, i);
-        save_frame_as_png(frame, &pixels, &palette, &output_file, header.max_width as u32, header.max_height as u32)?;
+        save_frame_as_png(frame, &palette, &output_file, header.max_width as u32, header.max_height as u32)?;
 
         log(LogLevel::Info, &format!("Saved frame {} to file {}", i, output_file));
     }
