@@ -1,0 +1,23 @@
+[package]
+name = "irongrp"
+edition = "2021"
+version = "0.1.0"
+authors = ["Johan Sjöblom <sjoblom.johan@gmail.com>"]
+description = "A Rust tool to convert StarCraft GRP files to PNG using a PAL color palette."
+license = "MIT"
+repository = "https://github.com/sjoblomj/irongrp"
+readme = "README.md"
+categories = ["graphics", "game-development"]
+keywords = ["starcraft", "warcraft-2", "grp", "graphics", "converter"]
+
+[[bin]]
+name = "irongrp"
+path = "src/main.rs"
+
+[dependencies]
+image = "0.25.5"      # For image manipulation (PNG output)
+clap = { version = "4.0", features = ["derive"] }  # For CLI argument parsing
+
+#[profile.release]
+#opt-level = 3         # Optimize for maximum performance
+#lto = true            # Enable Link-Time Optimization for smaller binaries
