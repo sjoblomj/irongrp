@@ -21,6 +21,23 @@ struct Args {
     /// Output directory
     output_dir: String,
 
+    /// Output all frames in one image. GRPs cannot be
+    /// created back from tiled images.
+    #[arg(long)]
+    tiled: bool,
+
+    /// Only applicable when using the 'tiled' argument.
+    /// Maximum width of the output tiled image.
+    /// If this is less than the maximum frame width of
+    /// the GRP itself, this value will be ignored.
+    #[arg(long)]
+    max_width: Option<u32>,
+
+    /// Enable transparancy in the PNG images. Default
+    /// behavior is to use index 0 in the palette.
+    #[arg(long)]
+    use_transparancy: bool,
+
     /// Logging level (debug, info, error)
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     log_level: LogLevel,
@@ -206,31 +223,92 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
     line_pixels
 }
 
-fn save_frame_as_png(
-    frame: &GrpFrame,
+fn render_and_save_frames_to_png(
+    frames: &[GrpFrame],
     palette: &[[u8; 3]],
-    output_path: &str,
-    max_width: u32,
-    max_height: u32,
+    max_frame_width: u32,
+    max_frame_height: u32,
+    args: &Args,
 ) -> Result<()> {
+    if args.tiled {
+        let mut cols = ((frames.len() as f64).sqrt()).floor() as u32;
+        log(LogLevel::Debug, &format!(
+            "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
+            cols,
+            max_frame_width,
+            max_frame_height,
+            args.max_width.unwrap_or(0)
+        ));
 
-    let mut img = ImageBuffer::from_pixel(max_width as u32, max_height as u32, Rgba([0, 0, 0, 0]));
+        if let Some(max_w) = args.max_width {
+            if max_w > max_frame_width && cols * max_frame_width > max_w {
+                cols = (max_w as f64 / max_frame_width as f64).floor() as u32;
+                log(LogLevel::Debug, &format!("Adjusted number of columns to: {}", cols));
+            }
+        }
 
-    let x_offset = frame.x_offset as u32;
-    let y_offset = frame.y_offset as u32;
+        let canvas_width = cols * max_frame_width;
+        let canvas_height = (frames.len() as f64 / cols as f64).ceil() as u32 * max_frame_height;
 
-    for y in 0..frame.height as u32 {
-        for x in 0..frame.width as u32 {
-            let index = frame.pixels[(y * frame.width as u32 + x) as usize] as usize;
-            let color = palette[index];
+        log(LogLevel::Debug, &format!("Canvas size: {}x{}", canvas_width, canvas_height));
 
-            img.put_pixel(x + x_offset, y + y_offset, Rgba([color[0], color[1], color[2], 255]));
+        let mut img = ImageBuffer::from_pixel(canvas_width, canvas_height, Rgba([0, 0, 0, 0]));
+
+        for (i, frame) in frames.iter().enumerate() {
+            let col = (i as u32) % cols;
+            let row = (i as u32) / cols;
+
+            let base_x = col * max_frame_width + frame.x_offset as u32;
+            let base_y = row * max_frame_height + frame.y_offset as u32;
+
+            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparancy);
+        }
+
+        let output_path = format!("{}/all_frames.png", args.output_dir);
+        img.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
+
+    } else {
+        for (i, frame) in frames.iter().enumerate() {
+            let mut img = ImageBuffer::from_pixel(max_frame_width, max_frame_height, Rgba([0, 0, 0, 0]));
+            let base_x = frame.x_offset as u32;
+            let base_y = frame.y_offset as u32;
+
+            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparancy);
+
+            let output_path = format!("{}/frame_{:03}.png", args.output_dir, i);
+            img.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            log(LogLevel::Info, &format!("Saved frame {} to {}", i, output_path));
         }
     }
 
-    img.save(output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     Ok(())
 }
+
+
+fn draw_frame_into_image(
+    img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    frame: &GrpFrame,
+    palette: &[[u8; 3]],
+    base_x: u32,
+    base_y: u32,
+    use_transparancy: bool,
+) {
+    for y in 0..frame.height as u32 {
+        for x in 0..frame.width as u32 {
+            let idx = (y * frame.width as u32 + x) as usize;
+            let palette_index = frame.pixels[idx] as usize;
+
+            if use_transparancy && palette_index == 0 {
+                continue;
+            }
+
+            let color = palette[palette_index];
+            img.put_pixel(base_x + x, base_y + y, Rgba([color[0], color[1], color[2], 255]));
+        }
+    }
+}
+
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -250,12 +328,13 @@ fn main() -> Result<()> {
     let header = read_grp_header(&mut file)?;
     let frames = read_grp_frames(&mut file, header.frame_count as usize)?;
 
-    for (i, frame) in frames.iter().enumerate() {
-        let output_file = format!("{}/frame_{:03}.png", args.output_dir, i);
-        save_frame_as_png(frame, &palette, &output_file, header.max_width as u32, header.max_height as u32)?;
-
-        log(LogLevel::Info, &format!("Saved frame {} to file {}", i, output_file));
-    }
+    render_and_save_frames_to_png(
+        &frames,
+        &palette,
+        header.max_width as u32,
+        header.max_height as u32,
+        &args,
+    )?;
 
     log(LogLevel::Info, "Conversion complete");
     Ok(())
