@@ -33,10 +33,10 @@ struct Args {
     #[arg(long)]
     max_width: Option<u32>,
 
-    /// Enable transparancy in the PNG images. Default
+    /// Enable transparency in the PNG images. Default
     /// behavior is to use index 0 in the palette.
     #[arg(long)]
-    use_transparancy: bool,
+    use_transparency: bool,
 
     /// Logging level (debug, info, error)
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
@@ -261,7 +261,7 @@ fn render_and_save_frames_to_png(
             let base_x = col * max_frame_width + frame.x_offset as u32;
             let base_y = row * max_frame_height + frame.y_offset as u32;
 
-            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparancy);
+            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparency);
         }
 
         let output_path = format!("{}/all_frames.png", args.output_dir);
@@ -274,7 +274,7 @@ fn render_and_save_frames_to_png(
             let base_x = frame.x_offset as u32;
             let base_y = frame.y_offset as u32;
 
-            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparancy);
+            draw_frame_into_image(&mut img, frame, palette, base_x, base_y, args.use_transparency);
 
             let output_path = format!("{}/frame_{:03}.png", args.output_dir, i);
             img.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
@@ -292,14 +292,14 @@ fn draw_frame_into_image(
     palette: &[[u8; 3]],
     base_x: u32,
     base_y: u32,
-    use_transparancy: bool,
+    use_transparency: bool,
 ) {
     for y in 0..frame.height as u32 {
         for x in 0..frame.width as u32 {
             let idx = (y * frame.width as u32 + x) as usize;
             let palette_index = frame.pixels[idx] as usize;
 
-            if use_transparancy && palette_index == 0 {
+            if use_transparency && palette_index == 0 {
                 continue;
             }
 
