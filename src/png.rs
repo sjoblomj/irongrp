@@ -49,6 +49,9 @@ pub fn render_and_save_frames_to_png(
     args: &Args,
 ) -> std::io::Result<()> {
     if args.tiled {
+        // Tiled mode, so we need to draw all frames into one image.
+        // Attempt to set the number of columns to sqrt(number of frames), but adjust if the resulting
+        // image is too wide. Thus, if there are 25 frames, we will attempt to create a 5x5 image.
         let mut cols = ((frames.len() as f64).sqrt()).floor() as u32;
         log(LogLevel::Debug, &format!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
@@ -58,6 +61,7 @@ pub fn render_and_save_frames_to_png(
             args.max_width.unwrap_or(0)
         ));
 
+        // The user has requested a maximum width in pixels, so we need to adjust the number of columns down.
         if let Some(max_w) = args.max_width {
             if max_w > max_frame_width && cols * max_frame_width > max_w {
                 cols = (max_w as f64 / max_frame_width as f64).floor() as u32;
@@ -101,7 +105,9 @@ pub fn render_and_save_frames_to_png(
         let output_path = format!("{}/all_frames.png", args.output_dir);
         image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
+
     } else {
+        // Non-tiled mode, so we save each frame as a separate image.
         for (i, frame) in frames.iter().enumerate() {
             let buffer = draw_frame_to_raw_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency);
 
