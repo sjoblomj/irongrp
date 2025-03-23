@@ -1,4 +1,5 @@
 use std::fmt;
+use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result};
 use std::sync::OnceLock;
@@ -11,14 +12,18 @@ pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Path to the GRP file
-    pub grp_path: String,
+    /// Path to the GRP file, or directory containing PNG files
+    pub input_path: String,
 
     /// Path to the PAL file
     pub pal_path: String,
 
     /// Output directory
     pub output_dir: String,
+
+    /// Mode of operation (grp2png, png2grp)
+    #[arg(long, value_enum, default_value_t = OperationMode::Grp2Png)]
+    pub mode: OperationMode,
 
     /// Output all frames in one image. GRPs cannot be
     /// created back from tiled images.
@@ -40,6 +45,12 @@ pub struct Args {
     /// Logging level (debug, info, error)
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     pub log_level: LogLevel,
+}
+
+#[derive(Clone, ValueEnum, PartialEq)]
+pub enum OperationMode {
+    Grp2Png,
+    Png2Grp,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -71,20 +82,37 @@ pub fn log(level: LogLevel, message: &str) {
 }
 
 
+pub fn list_png_files(dir: &str) -> Result<Vec<String>> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()?.to_str()?.eq_ignore_ascii_case("png") {
+                path.to_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    entries.sort();
+    Ok(entries)
+}
+
+
 // GRP File Structure
 #[derive(Debug)]
 pub struct GrpHeader {
     pub frame_count: u16,
-    pub max_width: u16,
-    pub max_height: u16,
+    pub max_width:   u16,
+    pub max_height:  u16,
 }
 
 #[derive(Clone, Debug)]
 pub struct GrpFrame {
     pub x_offset: u8,
     pub y_offset: u8,
-    pub width: u8,
-    pub height: u8,
+    pub width:    u8,
+    pub height:   u8,
     pub image_data_offset: u32,
     pub pixels: Vec<u8>,
 }
@@ -192,7 +220,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
                 break;
             }
             let color_index = line_data[data_offset]; // Color index from palette
-            data_offset    += 1;
+            data_offset += 1;
             log(LogLevel::Debug, &format!("Run-length encoding. Pixel with palette index {} will be repeated {} times.", color_index, run_length));
 
             for _ in 0..run_length {

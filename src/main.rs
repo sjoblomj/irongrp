@@ -1,6 +1,6 @@
 use clap::Parser;
 use irongrp::png::render_and_save_frames_to_png;
-use irongrp::{read_palette, read_grp_header, read_grp_frames, LOG_LEVEL, log, LogLevel, Args};
+use irongrp::{list_png_files, read_palette, read_grp_header, read_grp_frames, LOG_LEVEL, log, LogLevel, OperationMode, Args};
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
@@ -14,20 +14,31 @@ fn main() -> std::io::Result<()> {
 
     std::fs::create_dir_all(&args.output_dir)?;
 
-    let mut file = std::fs::File::open(&args.grp_path)?;
-    let palette  = read_palette(&args.pal_path)?;
-    let header   = read_grp_header(&mut file)?;
-    let frames   = read_grp_frames(&mut file, header.frame_count as usize)?;
+    let palette = read_palette(&args.pal_path)?;
 
-    render_and_save_frames_to_png(
-        &frames,
-        &palette,
-        header.max_width as u32,
-        header.max_height as u32,
-        &args,
-    )?;
+    if args.mode == OperationMode::Grp2Png {
+        let mut f  = std::fs::File::open(&args.input_path)?;
+        let header = read_grp_header(&mut f)?;
+        let frames = read_grp_frames(&mut f, header.frame_count as usize)?;
 
-    log(LogLevel::Info, "Conversion complete");
+        render_and_save_frames_to_png(
+            &frames,
+            &palette,
+            header.max_width as u32,
+            header.max_height as u32,
+            &args,
+        )?;
+
+        log(LogLevel::Info, "Conversion complete");
+
+    } else if args.mode == OperationMode::Png2Grp {
+        let png_files = list_png_files(&args.input_path)?;
+        //let grp_frames = files_to_grp(png_files, &palette)?;
+        log(LogLevel::Info, "Created GRP");
+
+    } else {
+        log(LogLevel::Error, "Invalid mode!");
+    }
     Ok(())
 }
 
