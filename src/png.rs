@@ -17,7 +17,7 @@ fn draw_frame_to_raw_buffer(
     for y in 0..frame.height as u32 {
         for x in 0..frame.width as u32 {
             let idx = (y * frame.width as u32 + x) as usize;
-            let palette_index = frame.pixels[idx] as usize;
+            let palette_index = frame.image_data.converted_pixels[idx] as usize;
             let color = palette[palette_index];
 
             let out_x = x + x_offset;
