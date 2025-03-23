@@ -1,4 +1,5 @@
-use crate::{GrpFrame, LogLevel, log, Args};
+use crate::{LogLevel, log, Args};
+use crate::grp::GrpFrame;
 use image::{ImageBuffer, DynamicImage};
 
 // Draws a frame into a raw buffer (Vec<u8>)
@@ -102,7 +103,7 @@ pub fn render_and_save_frames_to_png(
             )
         };
 
-        let output_path = format!("{}/all_frames.png", args.output_dir);
+        let output_path = format!("{}/all_frames.png", args.output_path);
         image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
 
@@ -123,7 +124,7 @@ pub fn render_and_save_frames_to_png(
                 )
             };
 
-            let output_path = format!("{}/frame_{:03}.png", args.output_dir, i);
+            let output_path = format!("{}/frame_{:03}.png", args.output_path, i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             log(LogLevel::Info, &format!("Saved frame {} to {}", i, output_path));
         }
