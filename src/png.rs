@@ -132,3 +132,45 @@ pub fn render_and_save_frames_to_png(
 
     Ok(())
 }
+
+fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
+    let mut best_index = 0;
+    let mut best_distance = u32::MAX;
+
+    for (i, &pal_color) in palette.iter().enumerate() {
+        let dr = color[0] as i32 - pal_color[0] as i32;
+        let dg = color[1] as i32 - pal_color[1] as i32;
+        let db = color[2] as i32 - pal_color[2] as i32;
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+
+        if dist < best_distance {
+            best_distance = dist;
+            best_index = i;
+        }
+    }
+
+    if best_distance != 0 {
+        log(LogLevel::Info, &format!(
+            "Non-exact color match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
+            color[0], color[1], color[2], best_index, best_distance
+        ));
+    }
+
+    best_index as u8
+}
+
+pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<(u8, u8, Vec<u8>)> {
+    let img = image::open(png_file_name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+        .to_rgb8();
+    let (width, height) = img.dimensions();
+    log(LogLevel::Debug, &format!("Reading image {}. Dimensions: {}x{}", png_file_name, width, height));
+
+    let mut pixels = Vec::with_capacity((width * height) as usize);
+    for pixel in img.pixels() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        let index = map_color_to_palette_index(rgb, palette);
+        pixels.push(index);
+    }
+    Ok((width as u8, height as u8, pixels))
+}

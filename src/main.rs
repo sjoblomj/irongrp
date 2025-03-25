@@ -1,7 +1,7 @@
+use std::path::Path;
 use clap::Parser;
-use irongrp::png::render_and_save_frames_to_png;
-use irongrp::grp::{read_palette, read_grp_header, read_grp_frames};
-use irongrp::{list_png_files, LOG_LEVEL, log, LogLevel, OperationMode, Args};
+use irongrp::grp::{grp_to_png, png_to_grp};
+use irongrp::{LOG_LEVEL, log, LogLevel, OperationMode, Args};
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
@@ -13,33 +13,29 @@ fn main() -> std::io::Result<()> {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
     }
 
-    std::fs::create_dir_all(&args.output_path)?;
-
-    let palette = read_palette(&args.pal_path)?;
-
     if args.mode == OperationMode::GrpToPng {
-        let mut f  = std::fs::File::open(&args.input_path)?;
-        let header = read_grp_header(&mut f)?;
-        let frames = read_grp_frames(&mut f, header.frame_count as usize)?;
+        let p = Path::new(&args.input_path);
+        if !p.exists() || p.is_dir() {
+            log(LogLevel::Error, "Invalid input path, please provide a file path to a GRP file.");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        }
+        std::fs::create_dir_all(&args.output_path)?;
 
-        render_and_save_frames_to_png(
-            &frames,
-            &palette,
-            header.max_width as u32,
-            header.max_height as u32,
-            &args,
-        )?;
-
+        grp_to_png(&args)?;
         log(LogLevel::Info, "Conversion complete");
 
     } else if args.mode == OperationMode::PngToGrp {
-        let png_files = list_png_files(&args.input_path)?;
-        //let grp_frames = files_to_grp(png_files, &palette)?;
-        log(LogLevel::Info, "Created GRP");
+        let p = Path::new(&args.output_path);
+        if p.exists() && p.is_dir() {
+            log(LogLevel::Error, "Output path is a directory, please provide a file path.");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        }
+
+        png_to_grp(&args)?;
+        log(LogLevel::Info, &format!("Wrote GRP to {}", &args.output_path));
 
     } else {
         log(LogLevel::Error, "Invalid mode!");
     }
     Ok(())
 }
-
