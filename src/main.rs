@@ -1,6 +1,7 @@
 use std::path::Path;
 use clap::Parser;
 use irongrp::grp::{grp_to_png, png_to_grp};
+use irongrp::analyse::analyse_grp;
 use irongrp::{LOG_LEVEL, log, LogLevel, OperationMode, Args};
 
 fn main() -> std::io::Result<()> {
@@ -33,6 +34,16 @@ fn main() -> std::io::Result<()> {
 
         png_to_grp(&args)?;
         log(LogLevel::Info, &format!("Wrote GRP to {}", &args.output_path));
+
+    } else if args.mode == OperationMode::AnalyseGrp {
+        let p = Path::new(&args.input_path);
+        if !p.exists() || p.is_dir() {
+            log(LogLevel::Error, "Invalid input path, please provide a file path to a GRP file.");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        }
+
+        analyse_grp(&args)?;
+        log(LogLevel::Info, "Analysis complete");
 
     } else {
         log(LogLevel::Error, "Invalid mode!");

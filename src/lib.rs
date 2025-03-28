@@ -3,6 +3,7 @@ use std::fs;
 use std::sync::OnceLock;
 use clap::{Parser, ValueEnum};
 
+pub mod analyse;
 pub mod grp;
 pub mod png;
 
@@ -50,12 +51,14 @@ pub struct Args {
 pub enum OperationMode {
     GrpToPng,
     PngToGrp,
+    AnalyseGrp,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
 pub enum LogLevel {
     Debug,
     Info,
+    Warn,
     Error,
 }
 
@@ -70,7 +73,8 @@ pub fn log(level: LogLevel, message: &str) {
     let level_order = |lvl: &LogLevel| match lvl {
         LogLevel::Debug => 0,
         LogLevel::Info  => 1,
-        LogLevel::Error => 2,
+        LogLevel::Warn  => 2,
+        LogLevel::Error => 3,
     };
 
     if let Some(current_level) = LOG_LEVEL.get() {
