@@ -18,6 +18,9 @@ path = "src/main.rs"
 image = "0.25.5"      # For image manipulation (PNG output)
 clap = { version = "4.0", features = ["derive"] }  # For CLI argument parsing
 
+[dev-dependencies]
+proptest = "1"
+
 #[profile.release]
 #opt-level = 3         # Optimize for maximum performance
 #lto = true            # Enable Link-Time Optimization for smaller binaries

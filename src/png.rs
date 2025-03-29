@@ -2,6 +2,16 @@ use crate::{LogLevel, log, Args};
 use crate::grp::GrpFrame;
 use image::{ImageBuffer, DynamicImage};
 
+pub struct TrimmedImage {
+    pub x_offset: u8,
+    pub y_offset: u8,
+    pub width: u8,
+    pub height: u8,
+    pub original_width: u8,
+    pub original_height: u8,
+    pub image_data: Vec<u8>,
+}
+
 // Draws a frame into a raw buffer (Vec<u8>)
 fn draw_frame_to_raw_buffer(
     frame: &GrpFrame,
@@ -126,7 +136,7 @@ pub fn render_and_save_frames_to_png(
 
             let output_path = format!("{}/frame_{:03}.png", args.output_path, i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            log(LogLevel::Info, &format!("Saved frame {} to {}", i, output_path));
+            log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
         }
     }
 
@@ -138,9 +148,9 @@ fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
     let mut best_distance = u32::MAX;
 
     for (i, &pal_color) in palette.iter().enumerate() {
-        let dr = color[0] as i32 - pal_color[0] as i32;
-        let dg = color[1] as i32 - pal_color[1] as i32;
-        let db = color[2] as i32 - pal_color[2] as i32;
+        let dr = color[0] as i32 - pal_color[0]  as i32;
+        let dg = color[1] as i32 - pal_color[1]  as i32;
+        let db = color[2] as i32 - pal_color[2]  as i32;
         let dist = (dr * dr + dg * dg + db * db) as u32;
 
         if dist < best_distance {
@@ -150,7 +160,7 @@ fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
     }
 
     if best_distance != 0 {
-        log(LogLevel::Info, &format!(
+        log(LogLevel::Warn, &format!(
             "Non-exact color match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
             color[0], color[1], color[2], best_index, best_distance
         ));
@@ -159,18 +169,89 @@ fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
     best_index as u8
 }
 
-pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<(u8, u8, Vec<u8>)> {
+pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<TrimmedImage> {
     let img = image::open(png_file_name)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
         .to_rgb8();
     let (width, height) = img.dimensions();
-    log(LogLevel::Debug, &format!("Reading image {}. Dimensions: {}x{}", png_file_name, width, height));
+    log(LogLevel::Info, &format!("Reading image {}. Dimensions: {:X}x{:X}", png_file_name, width, height));
 
-    let mut pixels = Vec::with_capacity((width * height) as usize);
-    for pixel in img.pixels() {
-        let rgb = [pixel[0], pixel[1], pixel[2]];
-        let index = map_color_to_palette_index(rgb, palette);
-        pixels.push(index);
+    let mut pixels_2d = vec![vec![0u8; width as usize]; height as usize];
+    for (y, row) in img.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let rgb = [pixel[0], pixel[1], pixel[2]];
+            let index = map_color_to_palette_index(rgb, palette);
+            pixels_2d[y][x] = index;
+        }
     }
-    Ok((width as u8, height as u8, pixels))
+
+    // Determine how many rows/columns to trim from each edge
+    let mut trim_top    = 0;
+    let mut trim_bottom = 0;
+    let mut trim_left   = 0;
+    let mut trim_right  = 0;
+
+    // Top
+    for row in &pixels_2d {
+        if row.iter().all(|&p| p == 0) {
+            trim_top += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Bottom
+    for row in pixels_2d.iter().rev() {
+        if row.iter().all(|&p| p == 0) {
+            trim_bottom += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Left
+    for x in 0..width as usize {
+        if pixels_2d.iter().all(|row| row[x] == 0) {
+            trim_left += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Right
+    for x in (0..width as usize).rev() {
+        if pixels_2d.iter().all(|row| row[x] == 0) {
+            trim_right += 1;
+        } else {
+            break;
+        }
+    }
+    log(LogLevel::Info, &format!(
+        "Trimming {} rows from top, {} from bottom, {} from left, {} from right",
+        trim_top, trim_bottom, trim_left, trim_right
+    ));
+
+
+    // Clamp dimensions
+    let new_width  = width  as usize - trim_left - trim_right;
+    let new_height = height as usize - trim_top - trim_bottom;
+
+    let mut trimmed_pixels = Vec::with_capacity(new_width * new_height);
+    for row in pixels_2d.iter().skip(trim_top).take(new_height) {
+        trimmed_pixels.extend(&row[trim_left..(trim_left + new_width)]);
+    }
+
+    log(LogLevel::Info, &format!(
+        "width: {:X}, new_width: {:X}, x_offset: {:X}",
+        width, new_width, ((width as usize - new_width) / 2)
+    ));
+    Ok(TrimmedImage {
+        x_offset: ((width  as usize - new_width)  / 2) as u8,
+        y_offset: ((height as usize - new_height) / 2) as u8,
+        width:  new_width   as u8,
+        height: new_height  as u8,
+        original_width:  width  as u8,
+        original_height: height as u8,
+        image_data: trimmed_pixels,
+    })
 }

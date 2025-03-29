@@ -4,10 +4,10 @@ use crate::{Args, LogLevel, log, list_png_files};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 
 #[derive(Debug)]
-struct GrpHeader {
-    frame_count: u16,
-    max_width:   u16,
-    max_height:  u16,
+pub struct GrpHeader {
+    pub frame_count: u16,
+    pub max_width:   u16,
+    pub max_height:  u16,
 }
 
 #[derive(Clone, Debug)]
@@ -33,10 +33,9 @@ pub struct ImageData {
 impl GrpFrame {
     /// The length of the frame in bytes, as it would be written to a GRP file
     fn grp_frame_len(&self) -> usize {
-        let frame_header_size    = std::mem::size_of::<u8>() * 4 + std::mem::size_of::<u32>();
         let row_offsets_size     = self.image_data.row_offsets.len() * 2; // u16 = 2 bytes
         let raw_data_size: usize = self.image_data.raw_row_data.iter().map(|row| row.len()).sum();
-        frame_header_size + row_offsets_size + raw_data_size
+        row_offsets_size + raw_data_size
     }
 }
 
@@ -45,12 +44,11 @@ fn read_palette(pal_path: &str) -> Result<Vec<[u8; 3]>> {
     let mut file = File::open(pal_path)?;
     let mut buffer = [0u8; 768]; // PAL files contain 256 RGB entries (256 * 3 bytes = 768)
     file.read_exact(&mut buffer)?;
-
     Ok(buffer.chunks(3).map(|c| [c[0], c[1], c[2]]).collect())
 }
 
 /// Parses the header of a GRP file
-fn read_grp_header(file: &mut File) -> Result<GrpHeader> {
+pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<GrpHeader> {
     let mut buf = [0u8; 6];
     file.read_exact(&mut buf)?;
     let header = GrpHeader {
@@ -64,7 +62,7 @@ fn read_grp_header(file: &mut File) -> Result<GrpHeader> {
 }
 
 /// Parses all GRP frames
-fn read_grp_frames(file: &mut File, frame_count: usize) -> Result<Vec<GrpFrame>> {
+pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Result<Vec<GrpFrame>> {
     let pos = file.stream_position()?;
     let mut frames = Vec::new();
     for i in 0..frame_count {
@@ -89,9 +87,9 @@ fn read_grp_frames(file: &mut File, frame_count: usize) -> Result<Vec<GrpFrame>>
 }
 
 /// Reads row offsets and decodes image data
-fn read_image_data(
-    file: &mut File,
-    width: usize,
+fn read_image_data<R: Read + Seek>(
+    file:   &mut R,
+    width:  usize,
     height: usize,
     image_data_offset: u64,
 ) -> Result<ImageData> {
@@ -109,11 +107,19 @@ fn read_image_data(
     let mut pixels = vec![0; width * height];
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
-        file.seek(SeekFrom::Start(image_data_offset + row_offset as u64))?;
+        let row_pos  = image_data_offset + row_offset as u64;
+        let file_len = file.seek(SeekFrom::End(0))?;
+        if row_pos >= file_len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("Row offset {} is beyond file length {}", row_pos, file_len),
+            ));
+        }
+        file.seek(SeekFrom::Start(row_pos))?;
         log(LogLevel::Debug, &format!("Reading frame row of width {} from offset {}", width, image_data_offset + row_offset as u64));
 
-        let mut row_data = Vec::new();
-        file.read_to_end(&mut row_data)?;
+        let mut row_data = vec![0; width];
+        file.read(&mut row_data)?;
         raw_row_data.push(row_data.clone());
 
         let decoded_row = decode_grp_rle_row(&row_data, width);
@@ -179,7 +185,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 
     line_pixels
 }
-
+/*
 /// Encodes pixels to an RLE-compressed ImageData
 fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
     let mut raw_row_data = Vec::new();
@@ -250,20 +256,101 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
        converted_pixels: pixels,
     }
 }
+*/
+
+/// Encodes an RLE-compressed row of pixels
+fn encode_grp_rle_row(row_pixels: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    let mut x = 0;
+
+    while x < row_pixels.len() {
+        let current = row_pixels[x];
+
+        println!("Encoding pixel at position {} with palette index {}", x, current);
+        // Case 1: Transparent run (index 0)
+        if current == 0 {
+            let mut run = 1;
+            while x + run < row_pixels.len() && row_pixels[x + run] == 0 && run < 127 {
+                run += 1;
+            }
+            encoded.push(0x80 | run as u8);
+            x += run;
+
+        } else { // Case 2: Run of the same color (but not transparent)
+            let mut run = 1;
+            while x + run < row_pixels.len()
+                && row_pixels[x + run] == current
+                && run < 63
+            {
+                run += 1;
+            }
+
+            if run >= 3 {
+                encoded.push(0x40 | run as u8);
+                encoded.push(current);
+                x += run;
+
+            } else { // Case 3: Literal copy
+                let mut run = 1;
+                while x + run < row_pixels.len()
+                    && (row_pixels[x + run] != 0
+                    && (row_pixels[x + run] != row_pixels[x + run - 1] || run < 3))
+                    && run < 63
+                {
+                    run += 1;
+                }
+
+                encoded.push(run as u8);
+                for i in 0..run {
+                    encoded.push(row_pixels[x + i]);
+                }
+                x += run;
+            }
+        }
+    }
+
+    encoded
+}
+
+
+/// Encodes pixels to an RLE-compressed ImageData
+fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
+    let mut raw_row_data = Vec::new();
+    let mut rle_data     = Vec::new();
+    let mut row_offsets  = Vec::with_capacity(height as usize);
+
+    for row in 0..height {
+        let row_start_offset = rle_data.len() + (height * 2) as usize;
+        row_offsets.push(row_start_offset as u16);
+
+        let start = row as usize * width as usize;
+        let end = start + width as usize;
+        let row_pixels = &pixels[start..end];
+
+        let encoded_row = encode_grp_rle_row(row_pixels);
+        rle_data.extend_from_slice(&encoded_row);
+        raw_row_data.push(encoded_row);
+    }
+
+    ImageData {
+       row_offsets,
+       raw_row_data,
+       converted_pixels: pixels,
+    }
+}
+
+fn get_max_size(frames: &[GrpFrame], dimension: fn(&GrpFrame) -> u8) -> u16 {
+    return frames
+        .iter()
+        .map(|f| dimension(f) as u16)
+        .max()
+        .unwrap_or(0);
+}
 
 /// Creates a GrpHeader from a set of GrpFrames
 fn create_grp_header(frames: &[GrpFrame]) -> GrpHeader {
-    let max_width = frames
-        .iter()
-        .map(|f| f.width as u16 + f.x_offset as u16)
-        .max()
-        .unwrap_or(0);
-
-    let max_height = frames
-        .iter()
-        .map(|f| f.height as u16 + f.y_offset as u16)
-        .max()
-        .unwrap_or(0);
+    let max_width  = get_max_size(frames, |f| f.width  + (f.x_offset * 2));
+    let max_height = get_max_size(frames, |f| f.height + (f.y_offset * 2));
 
     GrpHeader {
         frame_count: frames.len() as u16,
@@ -310,14 +397,14 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
 fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32) -> std::io::Result<GrpFrame> {
-    let (width, height, pixels) = png_to_pixels(png_file_name, palette)?;
-    let image_data = encode_grp_rle_data(width as u8, height as u8, pixels);
+    let image = png_to_pixels(png_file_name, palette)?;
+    let image_data = encode_grp_rle_data(image.width, image.height, image.image_data);
 
     Ok(GrpFrame {
-        x_offset: 0, // configurable if needed
-        y_offset: 0,
-        width:  width  as u8,
-        height: height as u8,
+        x_offset: image.x_offset,
+        y_offset: image.y_offset,
+        width:  image.width,
+        height: image.height,
         image_data_offset,
         image_data,
     })
@@ -333,9 +420,9 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]]) -> std::io::Result<
         image_data_offset += grp_frame.grp_frame_len() as u32;
         grp_frames.push(grp_frame);
     }
+
     Ok(grp_frames)
 }
-
 
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
@@ -361,4 +448,290 @@ pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
     let grp_frames = files_to_grp(png_files, &palette)?;
     let grp_header = create_grp_header(&grp_frames);
     write_grp_file(&args.output_path, &grp_header, &grp_frames)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use super::*;
+
+    #[test]
+    fn test_malformed_header() {
+        use std::io::Cursor;
+        let data = vec![0u8; 4]; // too short for a valid header
+        let mut cursor = Cursor::new(data);
+
+        let result = read_grp_header(&mut cursor);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_incomplete_frame_header() {
+        use std::io::Cursor;
+        let mut data = vec![0x01, 0x00, 0x01, 0x00, 0x01, 0x00]; // 1 frame, 1x1 size
+        data.extend(vec![0; 4]); // only half a frame header
+        let mut cursor = Cursor::new(data);
+
+        let _ = read_grp_header(&mut cursor); // skip header
+        let result = read_grp_frames(&mut cursor, 1);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_row_offset() {
+        use std::io::Cursor;
+        // Valid header + 1 frame header
+        let mut data = vec![0x01, 0x00, 0x01, 0x00, 0x01, 0x00]; // 1 frame, 1x1 size
+        data.extend(vec![0, 0, 1, 1, 14, 0, 0, 0]); // frame header (offset 14)
+        data.extend(vec![0xFF, 0xFF]); // row offset points far beyond file
+
+        let mut cursor = Cursor::new(data);
+        let _ = read_grp_header(&mut cursor);
+        let result = read_grp_frames(&mut cursor, 1);
+        assert!(result.is_err());
+    }
+
+
+    #[test]
+    fn test_decode_transparent_only() {
+        let data = vec![0x85]; // skip 5 transparent pixels
+
+        let result = decode_grp_rle_row(&data, 5);
+
+        assert_eq!(result, vec![0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_decode_solid_color_run() {
+        let data = vec![0x42, 7]; // repeat color 7 for 2 pixels
+
+        let result = decode_grp_rle_row(&data, 2);
+
+        assert_eq!(result, vec![7, 7]);
+    }
+
+    #[test]
+    fn test_decode_raw_pixels() {
+        let data = vec![3, 5, 6, 7]; // copy 3 pixels directly
+
+        let result = decode_grp_rle_row(&data, 3);
+
+        assert_eq!(result, vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn test_decode_mixed_sequence() {
+        let data = vec![0x81, 0x43, 9, 2, 8, 7];
+        // skip 1 transparent, repeat 9 for 3, then copy 2 pixels (8, 7)
+
+        let result = decode_grp_rle_row(&data, 6);
+
+        assert_eq!(result, vec![0, 9, 9, 9, 8, 7]);
+    }
+
+
+    #[test]
+    fn test_encode_transparent_only() {
+        // A row with 5 transparent pixels (palette index 0)
+        let row = vec![0; 5];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        // 0x80 means transparent run; 0x80 | 5 = 0x85
+        assert_eq!(encoded, vec![0x85]);
+    }
+
+    #[test]
+    fn test_encode_solid_color_run() {
+        // A row with 4 pixels of the same color (e.g. 7)
+        let row = vec![7; 4];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        // 0x40 means repeated color; 0x40 | 4 = 0x44, followed by the color
+        assert_eq!(encoded, vec![0x44, 7]);
+    }
+
+    #[test]
+    fn test_encode_raw_pixels() {
+        // A row with 3 different pixels (no repetition)
+        let row = vec![5, 6, 7];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        // No compression, just copy 3 pixels: [3, 5, 6, 7]
+        assert_eq!(encoded, vec![3, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_encode_mixed_sequence() {
+        // Mixed content:
+        // 1 transparent pixel, 3 repeated 9s, and then 2 different pixels
+        let row = vec![0, 9, 9, 9, 8, 7];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        // Breakdown:
+        // - 0x81: skip 1 transparent
+        // - 0x43, 9: repeat 9 for 3 times
+        // - 0x02, 8, 7: copy 2 pixels
+        assert_eq!(encoded, vec![0x81, 0x43, 9, 2, 8, 7]);
+    }
+
+
+    #[test]
+    fn test_encode_max_transparent_run() {
+        let row = vec![0; 127];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        assert_eq!(encoded, vec![0xFF]); // 0x80 | 127
+    }
+
+    #[test]
+    fn test_encode_max_solid_color_run() {
+        let row = vec![12; 63];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        assert_eq!(encoded, vec![0x7F, 12]); // 0x40 | 63 = 0x7F
+    }
+
+    #[test]
+    fn test_encode_max_raw_copy() {
+        let row: Vec<u8> = (1..63).collect();
+
+        let encoded = encode_grp_rle_row(&row);
+
+        let mut expected = vec![62];
+        expected.extend(row.iter());
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_encode_alternating_transparency() {
+        let row = vec![0, 1, 0, 2, 0, 3];
+
+        let encoded = encode_grp_rle_row(&row);
+
+        // Should encode as a series of transparent skips and literal copies.
+        // Before each literal copy there is a number (here 1 in each case)
+        // denoting how many pixels of that copy.
+        assert_eq!(encoded, vec![0x81, 1, 1, 0x81, 1, 2, 0x81, 1, 3]);
+    }
+
+
+    #[test]
+    fn test_encode_then_decode_roundtrip_wat_do() {
+        let original = vec![0x8F, 0x02, 0x8A, 0x40, 0x48, 0x8B, 0x04, 0x40, 0x40, 0x40, 0x8A, 0x8F];
+        let width = 44;
+
+        let decoded = decode_grp_rle_row(&original, width);
+        let encoded = encode_grp_rle_row(&decoded);
+
+        assert_eq!(original, encoded);
+    }
+
+    #[test]
+    fn test_encode_then_decode_roundtrip() {
+        let original = vec![0, 0, 7, 7, 7, 8, 9];
+        let width = original.len();
+
+        let encoded = encode_grp_rle_row(&original);
+        let decoded = decode_grp_rle_row(&encoded, width);
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_various_patterns() {
+        let test_rows = vec![
+            vec![0, 0, 0, 0, 0],
+            vec![1, 2, 3, 4, 5],
+            vec![5, 5, 5, 5, 5],
+            vec![0, 1, 1, 1, 0, 2, 2],
+            vec![1, 2, 2, 2, 3, 0, 0],
+        ];
+
+        for row in test_rows {
+            let encoded = encode_grp_rle_row(&row);
+            let decoded = decode_grp_rle_row(&encoded, row.len());
+            assert_eq!(decoded, row);
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_edge_cases() {
+        let max_transparent = vec![0; 127];
+        let max_solid_color = vec![42; 63];
+        let max_raw_copy: Vec<u8> = (0..63).collect();
+        let combo = [&[0; 3][..], &[5; 5][..], &[1, 2, 3][..]].concat();
+
+        let edge_cases = vec![
+            max_transparent,
+            max_solid_color,
+            max_raw_copy,
+            combo,
+        ];
+
+        for row in edge_cases {
+            let encoded = encode_grp_rle_row(&row);
+            let decoded = decode_grp_rle_row(&encoded, row.len());
+            assert_eq!(decoded, row);
+        }
+    }
+
+
+    #[test]
+    fn test_decode_truncated_run_length() {
+        // Claims to repeat a color, but color byte is missing
+        let data = vec![0x41]; // run-length of 1, but no color follows
+
+        let result = decode_grp_rle_row(&data, 1);
+
+        // Expect a fallback to default pixel value (0)
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn test_decode_run_exceeds_width() {
+        // Claims to repeat 5 pixels but only room for 3
+        let data = vec![0x45, 7]; // run-length of 5 with color 7
+
+        let result = decode_grp_rle_row(&data, 3);
+
+        // Should clamp at width
+        assert_eq!(result, vec![7, 7, 7]);
+    }
+
+    #[test]
+    fn test_decode_raw_exceeds_data() {
+        // Claims to copy 3 pixels but only 2 are present
+        let data = vec![3, 1, 2];
+
+        let result = decode_grp_rle_row(&data, 3);
+
+        assert_eq!(result, vec![1, 2, 0]);
+    }
+
+
+    // Property-based test: for any randomly generated row of pixel values (between 0 and 255),
+    // the function encodes the row with GRP RLE compression, then decodes it back again.
+    // The output must exactly match the original input.
+    // This ensures our encoder and decoder are inverses of each other and that the RLE logic
+    // works across a wide variety of input patterns, including edge cases we might not think to test manually.
+    //
+    // proptest generates hundreds of random rows (length 0 to 127) and runs the test for each.
+    proptest! {
+        #[test]
+        fn prop_encode_decode_roundtrip(row in proptest::collection::vec(0u8..=255, 0..128)) {
+            let width = row.len();
+            let encoded = encode_grp_rle_row(&row);
+            let decoded = decode_grp_rle_row(&encoded, width);
+            prop_assert_eq!(decoded, row);
+        }
+    }
 }
