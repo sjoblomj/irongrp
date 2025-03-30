@@ -185,78 +185,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 
     line_pixels
 }
-/*
-/// Encodes pixels to an RLE-compressed ImageData
-fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
-    let mut raw_row_data = Vec::new();
-    let mut rle_data     = Vec::new();
-    let mut row_offsets  = Vec::with_capacity(height as usize);
 
-    for row in 0..height {
-        let row_start_offset = rle_data.len();
-        row_offsets.push(row_start_offset as u16);
-
-        let start = row as usize * width as usize;
-        let end = start + width as usize;
-        let row_pixels = &pixels[start..end];
-
-        let mut x = 0;
-        while x < row_pixels.len() {
-            let current = row_pixels[x];
-
-            // Case 1: Transparent run (index 0)
-            if current == 0 {
-                let mut run = 1;
-                while x + run < row_pixels.len() && row_pixels[x + run] == 0 && run < 127 {
-                    run += 1;
-                }
-                rle_data.push(0x80 | run as u8);
-                x += run;
-            }
-
-            // Case 2: Run of the same color (but not transparent)
-            else {
-                let mut run = 1;
-                while x + run < row_pixels.len()
-                    && row_pixels[x + run] == current
-                    && run < 63
-                {
-                    run += 1;
-                }
-
-                if run >= 3 {
-                    rle_data.push(0x40 | run as u8);
-                    rle_data.push(current);
-                    x += run;
-                } else {
-                    // Case 3: Literal copy
-                    let mut run = 1;
-                    while x + run < row_pixels.len()
-                        && (row_pixels[x + run] != 0
-                        && (row_pixels[x + run] != row_pixels[x + run - 1] || run < 3))
-                        && run < 63
-                    {
-                        run += 1;
-                    }
-
-                    rle_data.push(run as u8);
-                    for i in 0..run {
-                        rle_data.push(row_pixels[x + i]);
-                    }
-                    x += run;
-                }
-            }
-        }
-        raw_row_data.push(rle_data[row_start_offset..].to_vec());
-    }
-
-    ImageData {
-       row_offsets,
-       raw_row_data,
-       converted_pixels: pixels,
-    }
-}
-*/
 
 /// Encodes an RLE-compressed row of pixels
 fn encode_grp_rle_row(row_pixels: &[u8]) -> Vec<u8> {
