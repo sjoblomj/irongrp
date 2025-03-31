@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result, Write};
-use crate::{Args, LogLevel, log, list_png_files};
+use crate::{Args, CompressionType, LogLevel, log, list_png_files};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 
 #[derive(Debug)]
@@ -188,52 +188,103 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 
 
 /// Encodes an RLE-compressed row of pixels
-fn encode_grp_rle_row(row_pixels: &[u8]) -> Vec<u8> {
+fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> Vec<u8> {
     let mut encoded = Vec::new();
-    let mut x = 0;
+    let mut i = 0;
+    for x in 0..row_pixels.len() {
+        println!("x: {:2}, row_pixels[i]: {:3X}", x, row_pixels[x]);
+    }
 
-    while x < row_pixels.len() {
-        let current = row_pixels[x];
+    let same_colour_threshold = if let CompressionType::Blizzard = compression_type {
+        4
+    } else {
+        2
+    };
 
-        println!("Encoding pixel at position {} with palette index {}", x, current);
+    let mut safety_break = 0;
+    while i < row_pixels.len() {
+        safety_break += 1;
+        if safety_break > 4096 {
+            log(LogLevel::Error, "Seems like we're stuck in an infinite loop, after 4096 iterations. Breaking.");
+            break;
+        }
+        let current_colour = row_pixels[i];
+
+        println!("Encoding pixel at position {} / {} with palette index {}", i, row_pixels.len(), current_colour);
         // Case 1: Transparent run (index 0)
-        if current == 0 {
-            let mut run = 1;
-            while x + run < row_pixels.len() && row_pixels[x + run] == 0 && run < 127 {
-                run += 1;
+        if current_colour == 0 {
+            let mut run_len = 1;
+            while i + run_len < row_pixels.len() && row_pixels[i + run_len] == 0 && run_len < 127 {
+                run_len += 1;
             }
-            encoded.push(0x80 | run as u8);
-            x += run;
+            println!("Transparent run of {} ({:X}) - {}", run_len, run_len, 0x80 | run_len as u8);
+            encoded.push(0x80 | run_len as u8);
+            i += run_len;
 
         } else { // Case 2: Run of the same color (but not transparent)
-            let mut run = 1;
-            while x + run < row_pixels.len()
-                && row_pixels[x + run] == current
-                && run < 63
+            let mut run_len = 1;
+            while i + run_len < row_pixels.len()
+                && row_pixels[i + run_len] == current_colour
+                && run_len < 63
             {
-                run += 1;
+                run_len += 1;
             }
+            println!("Pixels of the same colour: {} ({:X})", run_len, run_len);
 
-            if run >= 3 {
-                encoded.push(0x40 | run as u8);
-                encoded.push(current);
-                x += run;
+            if run_len > same_colour_threshold {
+                println!(">=3. Same colour {} ({:X}) - {} {:3}", run_len, run_len, 0x40 | run_len as u8, current_colour);
+                encoded.push(0x40 | run_len as u8);
+                encoded.push(current_colour);
+                i += run_len;
 
             } else { // Case 3: Literal copy
-                let mut run = 1;
-                while x + run < row_pixels.len()
-                    && (row_pixels[x + run] != 0
-                    && (row_pixels[x + run] != row_pixels[x + run - 1] || run < 3))
-                    && run < 63
-                {
-                    run += 1;
+                let start = i;
+                let mut run_len = 0;
+                let mut last_colour = 0;
+                let mut last_colour_len = 0;
+
+                // Go through the row until we find a run of same coloured pixels above the threshold
+                for x in i..row_pixels.len() {
+                    println!("xx: {:2}, row_pixels[i]: {:3X} ({:3})", x, row_pixels[x], row_pixels[x]);
+                    if row_pixels[x] == 0 {
+                        break;
+                    }
+                    if row_pixels[x] != last_colour || last_colour_len == 0 {
+                        // New pixel or first pixel
+                        last_colour = row_pixels[x];
+                        last_colour_len = 1;
+                    } else {
+                        // Repetition of last seen pixel
+                        last_colour_len += 1;
+                    }
+
+                    if last_colour_len > same_colour_threshold {
+                        run_len -= same_colour_threshold;
+                        break;
+                    }
+                    if run_len >= 63 {
+                        break;
+                    }
+                    run_len += 1;
                 }
 
-                encoded.push(run as u8);
-                for i in 0..run {
-                    encoded.push(row_pixels[x + i]);
-                }
-                x += run;
+                //while i < row_pixels.len()
+                //    && (run_len == 0 || row_pixels[i] != row_pixels[i + 1])
+                //    && row_pixels[i] != 0
+                //    && run_len < 63
+                //{
+                //    if i + 1 < row_pixels.len() {
+                //        println!("i: {:2}, run_len: {:2}, row_pixels[i]: {:3X}, row_pixels[i + 1]: {:3X}", i, run_len, row_pixels[i], row_pixels[i + 1]);
+                //    }
+                //    //println!("run_len: {:2}, row_pixels[i + run_len]: {:3X}, row_pixels[i + run_len - 1]: {:3X}", run_len, row_pixels[i + run_len], row_pixels[i + run_len - 1]);
+                //    run_len += 1;
+                //    i += 1;
+                //}
+                println!("Literal copy {} ({:X})", run_len, run_len);
+
+                encoded.push(run_len as u8);
+                encoded.extend_from_slice(&row_pixels[start..start + run_len]);
+                i += run_len;
             }
         }
     }
@@ -243,7 +294,7 @@ fn encode_grp_rle_row(row_pixels: &[u8]) -> Vec<u8> {
 
 
 /// Encodes pixels to an RLE-compressed ImageData
-fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
+fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type: &CompressionType) -> ImageData {
     let mut raw_row_data = Vec::new();
     let mut rle_data     = Vec::new();
     let mut row_offsets  = Vec::with_capacity(height as usize);
@@ -256,7 +307,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
         let end = start + width as usize;
         let row_pixels = &pixels[start..end];
 
-        let encoded_row = encode_grp_rle_row(row_pixels);
+        let encoded_row = encode_grp_rle_row(row_pixels, compression_type);
         rle_data.extend_from_slice(&encoded_row);
         raw_row_data.push(encoded_row);
     }
@@ -325,9 +376,9 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result
 }
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
-fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32) -> std::io::Result<GrpFrame> {
+fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32, compression_type: &CompressionType) -> std::io::Result<GrpFrame> {
     let image = png_to_pixels(png_file_name, palette)?;
-    let image_data = encode_grp_rle_data(image.width, image.height, image.image_data);
+    let image_data = encode_grp_rle_data(image.width, image.height, image.image_data, compression_type);
 
     Ok(GrpFrame {
         x_offset: image.x_offset,
@@ -340,12 +391,12 @@ fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: 
 }
 
 /// Turn all the given PNG files into a set of GrpFrames.
-fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]]) -> std::io::Result<Vec<GrpFrame>> {
+fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> std::io::Result<Vec<GrpFrame>> {
     let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut grp_frames = Vec::with_capacity(png_files.len());
 
     for png_file in png_files {
-        let grp_frame = png_to_grpframe(png_file.as_str(), palette, image_data_offset)?;
+        let grp_frame = png_to_grpframe(png_file.as_str(), palette, image_data_offset, compression_type)?;
         image_data_offset += grp_frame.grp_frame_len() as u32;
         grp_frames.push(grp_frame);
     }
@@ -374,7 +425,7 @@ pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
 pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
     let palette    = read_palette(&args.pal_path)?;
     let png_files  = list_png_files(&args.input_path)?;
-    let grp_frames = files_to_grp(png_files, &palette)?;
+    let grp_frames = files_to_grp(png_files, &palette, &args.compression_type)?;
     let grp_header = create_grp_header(&grp_frames);
     write_grp_file(&args.output_path, &grp_header, &grp_frames)
 }
@@ -467,10 +518,12 @@ mod tests {
         // A row with 5 transparent pixels (palette index 0)
         let row = vec![0; 5];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // 0x80 means transparent run; 0x80 | 5 = 0x85
-        assert_eq!(encoded, vec![0x85]);
+        assert_eq!(encoded_blizz, vec![0x85]);
+        assert_eq!(encoded_optim, vec![0x85]);
     }
 
     #[test]
@@ -478,10 +531,12 @@ mod tests {
         // A row with 4 pixels of the same color (e.g. 7)
         let row = vec![7; 4];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // 0x40 means repeated color; 0x40 | 4 = 0x44, followed by the color
-        assert_eq!(encoded, vec![0x44, 7]);
+        assert_eq!(encoded_blizz, vec![0x04, 7, 7, 7, 7]);
+        assert_eq!(encoded_optim, vec![0x44, 7]);
     }
 
     #[test]
@@ -489,10 +544,12 @@ mod tests {
         // A row with 3 different pixels (no repetition)
         let row = vec![5, 6, 7];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // No compression, just copy 3 pixels: [3, 5, 6, 7]
-        assert_eq!(encoded, vec![3, 5, 6, 7]);
+        assert_eq!(encoded_blizz, vec![0x03, 5, 6, 7]);
+        assert_eq!(encoded_optim, vec![0x03, 5, 6, 7]);
     }
 
     #[test]
@@ -501,13 +558,15 @@ mod tests {
         // 1 transparent pixel, 3 repeated 9s, and then 2 different pixels
         let row = vec![0, 9, 9, 9, 8, 7];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // Breakdown:
         // - 0x81: skip 1 transparent
         // - 0x43, 9: repeat 9 for 3 times
         // - 0x02, 8, 7: copy 2 pixels
-        assert_eq!(encoded, vec![0x81, 0x43, 9, 2, 8, 7]);
+        assert_eq!(encoded_blizz, vec![0x81, 0x05, 9, 9, 9, 8, 7]);
+        assert_eq!(encoded_optim, vec![0x81, 0x43, 9, 0x02, 8, 7]);
     }
 
 
@@ -515,53 +574,62 @@ mod tests {
     fn test_encode_max_transparent_run() {
         let row = vec![0; 127];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
-        assert_eq!(encoded, vec![0xFF]); // 0x80 | 127
+        assert_eq!(encoded_blizz, vec![0xFF]); // 0x80 | 127
+        assert_eq!(encoded_optim, vec![0xFF]); // 0x80 | 127
     }
 
     #[test]
     fn test_encode_max_solid_color_run() {
         let row = vec![12; 63];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
-        assert_eq!(encoded, vec![0x7F, 12]); // 0x40 | 63 = 0x7F
+        assert_eq!(encoded_blizz, vec![0x7F, 12]); // 0x40 | 63 = 0x7F
+        assert_eq!(encoded_optim, vec![0x7F, 12]); // 0x40 | 63 = 0x7F
     }
 
     #[test]
     fn test_encode_max_raw_copy() {
         let row: Vec<u8> = (1..63).collect();
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         let mut expected = vec![62];
         expected.extend(row.iter());
-        assert_eq!(encoded, expected);
+        assert_eq!(encoded_blizz, expected);
+        assert_eq!(encoded_optim, expected);
     }
 
     #[test]
     fn test_encode_alternating_transparency() {
         let row = vec![0, 1, 0, 2, 0, 3];
 
-        let encoded = encode_grp_rle_row(&row);
+        let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // Should encode as a series of transparent skips and literal copies.
         // Before each literal copy there is a number (here 1 in each case)
         // denoting how many pixels of that copy.
-        assert_eq!(encoded, vec![0x81, 1, 1, 0x81, 1, 2, 0x81, 1, 3]);
+        assert_eq!(encoded_blizz, vec![0x81, 0x01, 1, 0x81, 0x01, 2, 0x81, 0x01, 3]);
+        assert_eq!(encoded_optim, vec![0x81, 0x01, 1, 0x81, 0x01, 2, 0x81, 0x01, 3]);
     }
 
-
     #[test]
-    fn test_encode_then_decode_roundtrip_wat_do() {
+    fn test_encode_then_decode_roundtrip_with_differences_between_compression_types() {
         let original = vec![0x8F, 0x02, 0x8A, 0x40, 0x48, 0x8B, 0x04, 0x40, 0x40, 0x40, 0x8A, 0x8F];
         let width = 44;
 
         let decoded = decode_grp_rle_row(&original, width);
-        let encoded = encode_grp_rle_row(&decoded);
+        let encoded_blizz = encode_grp_rle_row(&decoded, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
-        assert_eq!(original, encoded);
+        assert_eq!(encoded_blizz, original);
+        assert_eq!(encoded_optim, vec![0x8F, 0x02, 138, 64, 0x48, 139, 0x43, 64, 0x01, 138, 0x8F]);
     }
 
     #[test]
@@ -569,10 +637,13 @@ mod tests {
         let original = vec![0, 0, 7, 7, 7, 8, 9];
         let width = original.len();
 
-        let encoded = encode_grp_rle_row(&original);
-        let decoded = decode_grp_rle_row(&encoded, width);
+        let encoded_blizz = encode_grp_rle_row(&original, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&original, &CompressionType::Optimised);
+        let decoded_blizz = decode_grp_rle_row(&encoded_blizz, width);
+        let decoded_optim = decode_grp_rle_row(&encoded_optim, width);
 
-        assert_eq!(original, decoded);
+        assert_eq!(original, decoded_blizz);
+        assert_eq!(original, decoded_optim);
     }
 
     #[test]
@@ -586,9 +657,12 @@ mod tests {
         ];
 
         for row in test_rows {
-            let encoded = encode_grp_rle_row(&row);
-            let decoded = decode_grp_rle_row(&encoded, row.len());
-            assert_eq!(decoded, row);
+            let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+            let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
+            let decoded_blizz = decode_grp_rle_row(&encoded_blizz, row.len());
+            let decoded_optim = decode_grp_rle_row(&encoded_optim, row.len());
+            assert_eq!(decoded_blizz, row);
+            assert_eq!(decoded_optim, row);
         }
     }
 
@@ -607,9 +681,12 @@ mod tests {
         ];
 
         for row in edge_cases {
-            let encoded = encode_grp_rle_row(&row);
-            let decoded = decode_grp_rle_row(&encoded, row.len());
-            assert_eq!(decoded, row);
+            let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+            let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
+            let decoded_blizz = decode_grp_rle_row(&encoded_blizz, row.len());
+            let decoded_optim = decode_grp_rle_row(&encoded_optim, row.len());
+            assert_eq!(decoded_blizz, row);
+            assert_eq!(decoded_optim, row);
         }
     }
 
@@ -658,7 +735,7 @@ mod tests {
         #[test]
         fn prop_encode_decode_roundtrip(row in proptest::collection::vec(0u8..=255, 0..128)) {
             let width = row.len();
-            let encoded = encode_grp_rle_row(&row);
+            let encoded = encode_grp_rle_row(&row, &CompressionType::Blizzard);
             let decoded = decode_grp_rle_row(&encoded, width);
             prop_assert_eq!(decoded, row);
         }

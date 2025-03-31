@@ -25,6 +25,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = OperationMode::GrpToPng)]
     pub mode: OperationMode,
 
+    /// Compression type to use when creating GRP files (blizzard, optimised, none)
+    #[arg(long, value_enum, default_value_t = CompressionType::Blizzard)]
+    pub compression_type: CompressionType,
+
     /// Output all frames in one image. GRPs cannot be
     /// created back from tiled images.
     #[arg(long)]
@@ -52,6 +56,13 @@ pub enum OperationMode {
     GrpToPng,
     PngToGrp,
     AnalyseGrp,
+}
+
+#[derive(Clone, ValueEnum, PartialEq)]
+pub enum CompressionType {
+    Blizzard,
+    Optimised,
+    None,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
