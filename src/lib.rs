@@ -58,7 +58,7 @@ pub enum OperationMode {
     AnalyseGrp,
 }
 
-#[derive(Clone, ValueEnum, PartialEq)]
+#[derive(Clone, ValueEnum, PartialEq, Debug)]
 pub enum CompressionType {
     Blizzard,
     Optimised,
@@ -74,6 +74,11 @@ pub enum LogLevel {
 }
 
 impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+impl fmt::Display for CompressionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
     }

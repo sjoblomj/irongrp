@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result, Write};
-use crate::{Args, CompressionType, LogLevel, log, list_png_files};
+use crate::{Args, CompressionType, LogLevel, log, LOG_LEVEL, list_png_files};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 
 #[derive(Debug)]
@@ -191,12 +191,16 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> Vec<u8> {
     let mut encoded = Vec::new();
     let mut i = 0;
-    for x in 0..row_pixels.len() {
-        println!("x: {:2}, row_pixels[i]: {:3X}", x, row_pixels[x]);
+
+    if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
+        log(LogLevel::Debug, &format!("Beginning to encode using compression type '{}'", compression_type));
+        for x in 0..row_pixels.len() {
+            log(LogLevel::Debug, &format!("x: {:2}, row_pixels[i]: {:2X} ({:3})", x, row_pixels[x], row_pixels[x]));
+        }
     }
 
     let same_colour_threshold = if let CompressionType::Blizzard = compression_type {
-        4
+        3
     } else {
         2
     };
@@ -210,14 +214,14 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
         }
         let current_colour = row_pixels[i];
 
-        println!("Encoding pixel at position {} / {} with palette index {}", i, row_pixels.len(), current_colour);
+        log(LogLevel::Debug, &format!("Encoding pixel at position {} / {} with palette index {}", i, row_pixels.len(), current_colour));
         // Case 1: Transparent run (index 0)
         if current_colour == 0 {
             let mut run_len = 1;
             while i + run_len < row_pixels.len() && row_pixels[i + run_len] == 0 && run_len < 127 {
                 run_len += 1;
             }
-            println!("Transparent run of {} ({:X}) - {}", run_len, run_len, 0x80 | run_len as u8);
+            log(LogLevel::Debug, &format!("Transparent run of {} ({:X}) => {}", run_len, run_len, 0x80 | run_len as u8));
             encoded.push(0x80 | run_len as u8);
             i += run_len;
 
@@ -229,10 +233,10 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             {
                 run_len += 1;
             }
-            println!("Pixels of the same colour: {} ({:X})", run_len, run_len);
+            log(LogLevel::Debug, &format!("Pixels of the same colour: {} ({:X})", run_len, run_len));
 
             if run_len > same_colour_threshold {
-                println!(">=3. Same colour {} ({:X}) - {} {:3}", run_len, run_len, 0x40 | run_len as u8, current_colour);
+                log(LogLevel::Debug, &format!("Same colour {} ({:X}) => {} {:2}", run_len, run_len, 0x40 | run_len as u8, current_colour));
                 encoded.push(0x40 | run_len as u8);
                 encoded.push(current_colour);
                 i += run_len;
@@ -245,7 +249,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
 
                 // Go through the row until we find a run of same coloured pixels above the threshold
                 for x in i..row_pixels.len() {
-                    println!("xx: {:2}, row_pixels[i]: {:3X} ({:3})", x, row_pixels[x], row_pixels[x]);
+                    log(LogLevel::Debug, &format!("Literal copy. x: {:2}, row_pixels[i]: {:2X} ({:3})", x, row_pixels[x], row_pixels[x]));
                     if row_pixels[x] == 0 {
                         break;
                     }
@@ -268,20 +272,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                     run_len += 1;
                 }
 
-                //while i < row_pixels.len()
-                //    && (run_len == 0 || row_pixels[i] != row_pixels[i + 1])
-                //    && row_pixels[i] != 0
-                //    && run_len < 63
-                //{
-                //    if i + 1 < row_pixels.len() {
-                //        println!("i: {:2}, run_len: {:2}, row_pixels[i]: {:3X}, row_pixels[i + 1]: {:3X}", i, run_len, row_pixels[i], row_pixels[i + 1]);
-                //    }
-                //    //println!("run_len: {:2}, row_pixels[i + run_len]: {:3X}, row_pixels[i + run_len - 1]: {:3X}", run_len, row_pixels[i + run_len], row_pixels[i + run_len - 1]);
-                //    run_len += 1;
-                //    i += 1;
-                //}
-                println!("Literal copy {} ({:X})", run_len, run_len);
-
+                log(LogLevel::Debug, &format!("Literal copy of {} ({:X}) => {}", run_len, run_len, run_len));
                 encoded.push(run_len as u8);
                 encoded.extend_from_slice(&row_pixels[start..start + run_len]);
                 i += run_len;
@@ -535,7 +526,7 @@ mod tests {
         let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
         // 0x40 means repeated color; 0x40 | 4 = 0x44, followed by the color
-        assert_eq!(encoded_blizz, vec![0x04, 7, 7, 7, 7]);
+        assert_eq!(encoded_blizz, vec![0x44, 7]);
         assert_eq!(encoded_optim, vec![0x44, 7]);
     }
 
@@ -630,6 +621,21 @@ mod tests {
 
         assert_eq!(encoded_blizz, original);
         assert_eq!(encoded_optim, vec![0x8F, 0x02, 138, 64, 0x48, 139, 0x43, 64, 0x01, 138, 0x8F]);
+    }
+
+    #[test]
+    fn test_encode_then_decode_longer_roundtrip_with_differences_between_compression_types() {
+        let original = vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x16, 0x0C, 0x42, 0x77, 0x2C, 0x8A, 0x8A, 0x8A, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
+        let width = 44;
+
+        let decoded = decode_grp_rle_row(&original, width);
+        let encoded_blizz = encode_grp_rle_row(&decoded, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
+
+        assert_eq!(encoded_blizz, original);
+        assert_eq!(encoded_optim, vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x4, 0x0C, 0x42, 0x77, 0x2C, 0x43, 0x8A, 0x0F, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81]);
+        assert_eq!(encoded_blizz.len(), 43);
+        assert_eq!(encoded_optim.len(), 43);
     }
 
     #[test]
