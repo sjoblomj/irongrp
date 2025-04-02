@@ -391,7 +391,8 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
 
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
-    let palette = read_palette(&args.pal_path)?;
+    let pal_path = &args.pal_path.as_deref().unwrap();
+    let palette  = read_palette(pal_path)?;
 
     let mut f  = std::fs::File::open(&args.input_path)?;
     let header = read_grp_header(&mut f)?;
@@ -408,11 +409,14 @@ pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
 
 /// Converts PNGs to a GRP
 pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
-    let palette    = read_palette(&args.pal_path)?;
-    let png_files  = list_png_files(&args.input_path)?;
+    let out_path  = &args.output_path.as_deref().unwrap();
+    let pal_path  = &args.pal_path.as_deref().unwrap();
+
+    let palette   = read_palette(pal_path)?;
+    let png_files = list_png_files(&args.input_path)?;
     let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &args.compression_type)?;
     let grp_header = create_grp_header(&grp_frames, max_width, max_height);
-    write_grp_file(&args.output_path, &grp_header, &grp_frames)
+    write_grp_file(out_path, &grp_header, &grp_frames)
 }
 
 

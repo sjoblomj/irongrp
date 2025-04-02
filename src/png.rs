@@ -113,7 +113,7 @@ pub fn render_and_save_frames_to_png(
             )
         };
 
-        let output_path = format!("{}/all_frames.png", args.output_path);
+        let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
         image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
 
@@ -134,7 +134,7 @@ pub fn render_and_save_frames_to_png(
                 )
             };
 
-            let output_path = format!("{}/frame_{:03}.png", args.output_path, i);
+            let output_path = format!("{}/frame_{:03}.png", args.output_path.as_deref().unwrap(), i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
         }

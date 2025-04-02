@@ -13,19 +13,22 @@ pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Path to the GRP file, or directory containing PNG files
+    #[arg(long, short='i')]
     pub input_path: String,
 
-    /// Path to the PAL file
-    pub pal_path: String,
+    /// Path to the palette file.
+    #[arg(long, short='p')]
+    pub pal_path: Option<String>,
 
     /// Output directory if input is a GRP file, or output file if input is a directory
-    pub output_path: String,
+    #[arg(long, short='o')]
+    pub output_path: Option<String>,
 
-    /// Mode of operation (grp-to-png, png-to-grp)
-    #[arg(long, value_enum, default_value_t = OperationMode::GrpToPng)]
+    /// Mode of operation.
+    #[arg(long, short='m', required=true, value_enum, default_value_t = OperationMode::GrpToPng)]
     pub mode: OperationMode,
 
-    /// Compression type to use when creating GRP files (blizzard, optimised, none)
+    /// Compression type to use when creating GRP files.
     #[arg(long, value_enum, default_value_t = CompressionType::Blizzard)]
     pub compression_type: CompressionType,
 
@@ -35,7 +38,7 @@ pub struct Args {
     pub tiled: bool,
 
     /// Only applicable when using the 'tiled' argument.
-    /// Maximum width of the output tiled image.
+    /// Maximum width in pixels of the output tiled image.
     /// If this is less than the maximum frame width of
     /// the GRP itself, this value will be ignored.
     #[arg(long)]
@@ -46,7 +49,7 @@ pub struct Args {
     #[arg(long)]
     pub use_transparency: bool,
 
-    /// Logging level (debug, info, error)
+    /// Logging level
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     pub log_level: LogLevel,
 }
