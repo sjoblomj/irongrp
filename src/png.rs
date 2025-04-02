@@ -5,10 +5,10 @@ use image::{ImageBuffer, DynamicImage};
 pub struct TrimmedImage {
     pub x_offset: u8,
     pub y_offset: u8,
-    pub width: u8,
-    pub height: u8,
-    pub original_width: u8,
-    pub original_height: u8,
+    pub width:    u8,
+    pub height:   u8,
+    pub original_width:  u16,
+    pub original_height: u16,
     pub image_data: Vec<u8>,
 }
 
@@ -226,7 +226,7 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
             break;
         }
     }
-    log(LogLevel::Info, &format!(
+    log(LogLevel::Debug, &format!(
         "Trimming {} rows from top, {} from bottom, {} from left, {} from right",
         trim_top, trim_bottom, trim_left, trim_right
     ));
@@ -241,17 +241,21 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
         trimmed_pixels.extend(&row[trim_left..(trim_left + new_width)]);
     }
 
-    log(LogLevel::Info, &format!(
-        "width: {:X}, new_width: {:X}, x_offset: {:X}",
+    log(LogLevel::Debug, &format!(
+        "width:  {:X},   new_width: {:X}, x_offset: {:X}",
         width, new_width, ((width as usize - new_width) / 2)
     ));
+    log(LogLevel::Debug, &format!(
+        "height: {:X}, new_height: {:X}, y_offset: {:X}",
+        height, new_height, ((height as usize - new_height) / 2)
+    ));
     Ok(TrimmedImage {
-        x_offset: ((width  as usize - new_width)  / 2) as u8,
-        y_offset: ((height as usize - new_height) / 2) as u8,
+        x_offset: trim_left as u8,
+        y_offset: trim_top  as u8,
         width:  new_width   as u8,
         height: new_height  as u8,
-        original_width:  width  as u8,
-        original_height: height as u8,
+        original_width:  width  as u16,
+        original_height: height as u16,
         image_data: trimmed_pixels,
     })
 }

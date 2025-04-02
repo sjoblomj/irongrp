@@ -310,19 +310,8 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
     }
 }
 
-fn get_max_size(frames: &[GrpFrame], dimension: fn(&GrpFrame) -> u8) -> u16 {
-    return frames
-        .iter()
-        .map(|f| dimension(f) as u16)
-        .max()
-        .unwrap_or(0);
-}
-
 /// Creates a GrpHeader from a set of GrpFrames
-fn create_grp_header(frames: &[GrpFrame]) -> GrpHeader {
-    let max_width  = get_max_size(frames, |f| f.width  + (f.x_offset * 2));
-    let max_height = get_max_size(frames, |f| f.height + (f.y_offset * 2));
-
+fn create_grp_header(frames: &[GrpFrame], max_width: u16, max_height: u16) -> GrpHeader {
     GrpHeader {
         frame_count: frames.len() as u16,
         max_width,
@@ -367,32 +356,37 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result
 }
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
-fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32, compression_type: &CompressionType) -> std::io::Result<GrpFrame> {
+fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32, compression_type: &CompressionType) -> std::io::Result<(GrpFrame, u16, u16)> {
     let image = png_to_pixels(png_file_name, palette)?;
     let image_data = encode_grp_rle_data(image.width, image.height, image.image_data, compression_type);
 
-    Ok(GrpFrame {
+    Ok((GrpFrame {
         x_offset: image.x_offset,
         y_offset: image.y_offset,
         width:  image.width,
         height: image.height,
         image_data_offset,
         image_data,
-    })
+    }, image.original_width, image.original_height))
 }
 
 /// Turn all the given PNG files into a set of GrpFrames.
-fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> std::io::Result<Vec<GrpFrame>> {
+fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> std::io::Result<(Vec<GrpFrame>, u16, u16)> {
     let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut grp_frames = Vec::with_capacity(png_files.len());
 
+    let mut max_width  = 0;
+    let mut max_height = 0;
     for png_file in png_files {
-        let grp_frame = png_to_grpframe(png_file.as_str(), palette, image_data_offset, compression_type)?;
+        let (grp_frame, orig_width, orig_height) = png_to_grpframe(png_file.as_str(), palette, image_data_offset, compression_type)?;
         image_data_offset += grp_frame.grp_frame_len() as u32;
         grp_frames.push(grp_frame);
+
+        max_width  = std::cmp::max(max_width,  orig_width);
+        max_height = std::cmp::max(max_height, orig_height);
     }
 
-    Ok(grp_frames)
+    Ok((grp_frames, max_width, max_height))
 }
 
 /// Converts a GRP to PNGs
@@ -416,8 +410,8 @@ pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
 pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
     let palette    = read_palette(&args.pal_path)?;
     let png_files  = list_png_files(&args.input_path)?;
-    let grp_frames = files_to_grp(png_files, &palette, &args.compression_type)?;
-    let grp_header = create_grp_header(&grp_frames);
+    let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &args.compression_type)?;
+    let grp_header = create_grp_header(&grp_frames, max_width, max_height);
     write_grp_file(&args.output_path, &grp_header, &grp_frames)
 }
 
