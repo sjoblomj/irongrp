@@ -93,6 +93,7 @@ fn read_image_data<R: Read + Seek>(
     height: usize,
     image_data_offset: u64,
 ) -> Result<ImageData> {
+    let file_len = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(image_data_offset))?;
 
     let mut row_offsets = Vec::with_capacity(height);
@@ -102,29 +103,45 @@ fn read_image_data<R: Read + Seek>(
         let row_offset = u16::from_le_bytes(row_offset_buf);
         row_offsets.push(row_offset);
     }
+    //file.seek(SeekFrom::Start(image_data_offset))?;
+    //let mut row_data = vec![0; file_len as usize];
+    //file.read(&mut row_data)?;
 
     let mut raw_row_data = Vec::with_capacity(height);
     let mut pixels = vec![0; width * height];
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
-        let row_pos  = image_data_offset + row_offset as u64;
-        let file_len = file.seek(SeekFrom::End(0))?;
+        let row_pos = image_data_offset + row_offset as u64;
         if row_pos >= file_len {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!("Row offset {} is beyond file length {}", row_pos, file_len),
             ));
         }
-        file.seek(SeekFrom::Start(row_pos))?;
         log(LogLevel::Debug, &format!("Reading frame row of width {} from offset {}", width, image_data_offset + row_offset as u64));
 
-        let mut row_data = vec![0; width];
+        let mut row_data = vec![0; file_len as usize];
+        file.seek(SeekFrom::Start(row_pos))?;
         file.read(&mut row_data)?;
-        raw_row_data.push(row_data.clone());
 
-        let decoded_row = decode_grp_rle_row(&row_data, width);
+        let (decoded_row, encoded_length) = decode_grp_rle_row(&row_data, width);
+        raw_row_data.push(row_data[0 .. encoded_length].to_vec());
+
+//        let (decoded_row, encoded_length) = decode_grp_rle_row(&row_data[row_pos as usize .. row_data.len()], width);
+//        raw_row_data.push(row_data[row_pos as usize .. row_pos as usize + encoded_length].to_vec());
+
+        //let raw_row = &row_data[row_pos as usize .. row_pos as usize + encoded_length];
+/*
+        let raw_data = row_data[(image_data_offset + row_offset as u64) as u32 .. (encoded_length as u32) as u32];
+        let mut raw_data = vec![0; encoded_length];
+        file.seek(SeekFrom::Start(row_pos))?;
+        file.read(&mut raw_data)?;
+
+        log(LogLevel::Info, &format!("raw_data length: {}", raw_row.len()));
+        raw_row_data.push(raw_row.to_vec());
+*/
         let start = row * width;
-        pixels[start..start + decoded_row.len()].copy_from_slice(&decoded_row);
+        pixels[start .. start + decoded_row.len()].copy_from_slice(&decoded_row);
     }
 
     Ok(ImageData {
@@ -135,7 +152,7 @@ fn read_image_data<R: Read + Seek>(
 }
 
 /// Decodes an RLE-compressed row of pixels
-fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
+fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) {
     let mut line_pixels = vec![0; image_width]; // Initialize with transparent pixels (palette index 0)
     let mut x = 0; // Position in output row
     let mut data_offset = 0; // Position in input data
@@ -147,21 +164,21 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
         if control_byte & 0x80 != 0 { // Transparent - skip x pixels
             let skip = (control_byte & 0x7F) as usize;
             x += skip;
-            log(LogLevel::Debug, &format!("Transparent byte. Skipping {} pixels.", skip));
+            log(LogLevel::Debug, &format!("Decoding transparent byte. Skipping {} pixels.", skip));
 
         } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same color X times)
             let run_length  = (control_byte & 0x3F) as usize;
             if data_offset >= line_data.len() { // Safety check
-                log(LogLevel::Error, &format!("Run-length encoding error: Requested offset ({}) is greater than line length ({}).", data_offset, line_data.len()));
+                log(LogLevel::Error, &format!("Decoding error: Requested offset ({}) is greater than line length ({}).", data_offset, line_data.len()));
                 break;
             }
             let color_index = line_data[data_offset]; // Color index from palette
             data_offset += 1;
-            log(LogLevel::Debug, &format!("Run-length encoding. Pixel with palette index {} will be repeated {} times.", color_index, run_length));
+            log(LogLevel::Debug, &format!("Decoding. Pixel with palette index {} will be repeated {} times.", color_index, run_length));
 
             for _ in 0..run_length {
                 if x >= image_width {
-                    log(LogLevel::Error, &format!("Run-length encoding error: X position ({}) is greater than image width ({}).", x, image_width));
+                    log(LogLevel::Error, &format!("Decoding error: X position ({}) is greater than image width ({}).", x, image_width));
                     break;
                 }
                 line_pixels[x] = color_index;
@@ -170,20 +187,24 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> Vec<u8> {
 
         } else { // Normal - copy x pixels directly
             let copy_length = control_byte as usize;
-            log(LogLevel::Debug, &format!("Normal encoding. Will copy {} pixels.", copy_length));
+            log(LogLevel::Debug, &format!("Normal decoding. Will copy {} pixels.", copy_length));
             for _ in 0..copy_length {
                 if x >= image_width || data_offset >= line_data.len() {
-                    log(LogLevel::Error, &format!("Encoding error: X position ({}) is greater than image width ({}), or data offset ({}) is greater than line length ({}).", x, image_width, data_offset, line_data.len()));
+                    log(LogLevel::Error, &format!("Decoding error: X position ({}) is greater than image width ({}), or data offset ({}) is greater than line length ({}).", x, image_width, data_offset, line_data.len()));
                     break;
                 }
                 line_pixels[x] = line_data[data_offset];
                 x += 1;
                 data_offset += 1;
             }
+            if copy_length == 0 {
+                data_offset += 1;
+                log(LogLevel::Error, "Read instruction to copy 0 pixels - Stepping over");
+            }
         }
     }
 
-    line_pixels
+    (line_pixels, data_offset)
 }
 
 
@@ -209,7 +230,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     while i < row_pixels.len() {
         safety_break += 1;
         if safety_break > 4096 {
-            log(LogLevel::Error, "Seems like we're stuck in an infinite loop, after 4096 iterations. Breaking.");
+            log(LogLevel::Error, "Seems like we're stuck in an infinite encoding loop, after 4096 iterations. Breaking.");
             break;
         }
         let current_colour = row_pixels[i];
@@ -221,7 +242,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             while i + run_len < row_pixels.len() && row_pixels[i + run_len] == 0 && run_len < 127 {
                 run_len += 1;
             }
-            log(LogLevel::Debug, &format!("Transparent run of {} ({:X}) => {}", run_len, run_len, 0x80 | run_len as u8));
+            log(LogLevel::Debug, &format!("Encoding transparent run of {} ({:X}) => {}", run_len, run_len, 0x80 | run_len as u8));
             encoded.push(0x80 | run_len as u8);
             i += run_len;
 
@@ -233,10 +254,10 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             {
                 run_len += 1;
             }
-            log(LogLevel::Debug, &format!("Pixels of the same colour: {} ({:X})", run_len, run_len));
+            log(LogLevel::Debug, &format!("Encoding: Pixels of the same colour: {} ({:X})", run_len, run_len));
 
             if run_len > same_colour_threshold {
-                log(LogLevel::Debug, &format!("Same colour {} ({:X}) => {} {:2}", run_len, run_len, 0x40 | run_len as u8, current_colour));
+                log(LogLevel::Debug, &format!("Encoding same colour {} ({:X}) => {} {:2}", run_len, run_len, 0x40 | run_len as u8, current_colour));
                 encoded.push(0x40 | run_len as u8);
                 encoded.push(current_colour);
                 i += run_len;
@@ -249,7 +270,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
 
                 // Go through the row until we find a run of same coloured pixels above the threshold
                 for x in i..row_pixels.len() {
-                    log(LogLevel::Debug, &format!("Literal copy. x: {:2}, row_pixels[i]: {:2X} ({:3})", x, row_pixels[x], row_pixels[x]));
+                    log(LogLevel::Debug, &format!("Encoding literal copy. x: {:2}, row_pixels[i]: {:2X} ({:3})", x, row_pixels[x], row_pixels[x]));
                     if row_pixels[x] == 0 {
                         break;
                     }
@@ -272,7 +293,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                     run_len += 1;
                 }
 
-                log(LogLevel::Debug, &format!("Literal copy of {} ({:X}) => {}", run_len, run_len, run_len));
+                log(LogLevel::Debug, &format!("Encoding literal copy of {} ({:X}) => {}", run_len, run_len, run_len));
                 encoded.push(run_len as u8);
                 encoded.extend_from_slice(&row_pixels[start..start + run_len]);
                 i += run_len;
@@ -468,27 +489,30 @@ mod tests {
     fn test_decode_transparent_only() {
         let data = vec![0x85]; // skip 5 transparent pixels
 
-        let result = decode_grp_rle_row(&data, 5);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 5);
 
         assert_eq!(result, vec![0, 0, 0, 0, 0]);
+        assert_eq!(encoded_length, data.len());
     }
 
     #[test]
     fn test_decode_solid_color_run() {
         let data = vec![0x42, 7]; // repeat color 7 for 2 pixels
 
-        let result = decode_grp_rle_row(&data, 2);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 2);
 
         assert_eq!(result, vec![7, 7]);
+        assert_eq!(encoded_length, data.len());
     }
 
     #[test]
     fn test_decode_raw_pixels() {
         let data = vec![3, 5, 6, 7]; // copy 3 pixels directly
 
-        let result = decode_grp_rle_row(&data, 3);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
 
         assert_eq!(result, vec![5, 6, 7]);
+        assert_eq!(encoded_length, data.len());
     }
 
     #[test]
@@ -496,9 +520,10 @@ mod tests {
         let data = vec![0x81, 0x43, 9, 2, 8, 7];
         // skip 1 transparent, repeat 9 for 3, then copy 2 pixels (8, 7)
 
-        let result = decode_grp_rle_row(&data, 6);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 6);
 
         assert_eq!(result, vec![0, 9, 9, 9, 8, 7]);
+        assert_eq!(encoded_length, data.len());
     }
 
 
@@ -613,12 +638,13 @@ mod tests {
         let original = vec![0x8F, 0x02, 0x8A, 0x40, 0x48, 0x8B, 0x04, 0x40, 0x40, 0x40, 0x8A, 0x8F];
         let width = 44;
 
-        let decoded = decode_grp_rle_row(&original, width);
+        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
         let encoded_blizz = encode_grp_rle_row(&decoded, &CompressionType::Blizzard);
         let encoded_optim = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
         assert_eq!(encoded_blizz, original);
         assert_eq!(encoded_optim, vec![0x8F, 0x02, 138, 64, 0x48, 139, 0x43, 64, 0x01, 138, 0x8F]);
+        assert_eq!(encoded_length, original.len());
     }
 
     #[test]
@@ -626,7 +652,7 @@ mod tests {
         let original = vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x16, 0x0C, 0x42, 0x77, 0x2C, 0x8A, 0x8A, 0x8A, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
         let width = 44;
 
-        let decoded = decode_grp_rle_row(&original, width);
+        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
         let encoded_blizz = encode_grp_rle_row(&decoded, &CompressionType::Blizzard);
         let encoded_optim = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
@@ -634,6 +660,7 @@ mod tests {
         assert_eq!(encoded_optim, vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x4, 0x0C, 0x42, 0x77, 0x2C, 0x43, 0x8A, 0x0F, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81]);
         assert_eq!(encoded_blizz.len(), 43);
         assert_eq!(encoded_optim.len(), 43);
+        assert_eq!(encoded_length, original.len());
     }
 
     #[test]
@@ -643,11 +670,13 @@ mod tests {
 
         let encoded_blizz = encode_grp_rle_row(&original, &CompressionType::Blizzard);
         let encoded_optim = encode_grp_rle_row(&original, &CompressionType::Optimised);
-        let decoded_blizz = decode_grp_rle_row(&encoded_blizz, width);
-        let decoded_optim = decode_grp_rle_row(&encoded_optim, width);
+        let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, width);
+        let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, width);
 
         assert_eq!(original, decoded_blizz);
         assert_eq!(original, decoded_optim);
+        assert_eq!(encoded_blizz_length, encoded_blizz.len());
+        assert_eq!(encoded_optim_length, encoded_optim.len());
     }
 
     #[test]
@@ -663,10 +692,13 @@ mod tests {
         for row in test_rows {
             let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
             let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let decoded_blizz = decode_grp_rle_row(&encoded_blizz, row.len());
-            let decoded_optim = decode_grp_rle_row(&encoded_optim, row.len());
+            let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, row.len());
+            let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, row.len());
+
             assert_eq!(decoded_blizz, row);
             assert_eq!(decoded_optim, row);
+            assert_eq!(encoded_blizz_length, encoded_blizz.len());
+            assert_eq!(encoded_optim_length, encoded_optim.len());
         }
     }
 
@@ -687,11 +719,14 @@ mod tests {
         for row in edge_cases {
             let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
             let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let decoded_blizz = decode_grp_rle_row(&encoded_blizz, row.len());
-            let decoded_optim = decode_grp_rle_row(&encoded_optim, row.len());
+            let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, row.len());
+            let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, row.len());
+
             assert_eq!(decoded_blizz, row);
             assert_eq!(decoded_optim, row);
-        }
+            assert_eq!(encoded_blizz_length, encoded_blizz.len());
+            assert_eq!(encoded_optim_length, encoded_optim.len());
+         }
     }
 
 
@@ -700,10 +735,11 @@ mod tests {
         // Claims to repeat a color, but color byte is missing
         let data = vec![0x41]; // run-length of 1, but no color follows
 
-        let result = decode_grp_rle_row(&data, 1);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 1);
 
         // Expect a fallback to default pixel value (0)
         assert_eq!(result, vec![0]);
+        assert_eq!(encoded_length, data.len());
     }
 
     #[test]
@@ -711,10 +747,11 @@ mod tests {
         // Claims to repeat 5 pixels but only room for 3
         let data = vec![0x45, 7]; // run-length of 5 with color 7
 
-        let result = decode_grp_rle_row(&data, 3);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
 
         // Should clamp at width
         assert_eq!(result, vec![7, 7, 7]);
+        assert_eq!(encoded_length, data.len());
     }
 
     #[test]
@@ -722,9 +759,10 @@ mod tests {
         // Claims to copy 3 pixels but only 2 are present
         let data = vec![3, 1, 2];
 
-        let result = decode_grp_rle_row(&data, 3);
+        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
 
         assert_eq!(result, vec![1, 2, 0]);
+        assert_eq!(encoded_length, data.len());
     }
 
 
@@ -740,8 +778,9 @@ mod tests {
         fn prop_encode_decode_roundtrip(row in proptest::collection::vec(0u8..=255, 0..128)) {
             let width = row.len();
             let encoded = encode_grp_rle_row(&row, &CompressionType::Blizzard);
-            let decoded = decode_grp_rle_row(&encoded, width);
+            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width);
             prop_assert_eq!(decoded, row);
+            prop_assert_eq!(encoded_length, encoded.len());
         }
     }
 }
