@@ -15,7 +15,57 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
 
     let header = read_grp_header(&mut file)?;
     let frames = read_grp_frames(&mut file, header.frame_count as usize)?;
+    println!();
 
+    if args.frame_number.is_some() {
+        let frame_number = args.frame_number.unwrap() as usize;
+        if  frame_number > frames.len() {
+            log(LogLevel::Error, &format!("Frame number {} is out of range (0-{})", frame_number, frames.len() - 1));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        }
+        let row_number = args.analyse_row_number.unwrap_or(frames[frame_number].height + 1);
+        if  row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
+            log(LogLevel::Error, &format!("Row number {} is out of range (0-{})", row_number, frames[frame_number].height));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        }
+
+        let next_offset = if frame_number + 1 < frames.len() {
+            frames[frame_number + 1].image_data_offset
+        } else {
+            file_len as u32
+        };
+        log(LogLevel::Info, &format!("Analyzing frame {}:", frame_number));
+        log(LogLevel::Info, &format!("- X offset: {}", frames[frame_number].x_offset));
+        log(LogLevel::Info, &format!("- Y offset: {}", frames[frame_number].y_offset));
+        log(LogLevel::Info, &format!("- Width:    {}", frames[frame_number].width));
+        log(LogLevel::Info, &format!("- Height:   {}", frames[frame_number].height));
+        log(LogLevel::Info, &format!("- This frames image data offset: 0x{:X}", frames[frame_number].image_data_offset));
+        log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:X}", next_offset));
+        for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
+            log(LogLevel::Info, &format!("- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}", i, i, frames[frame_number].image_data.row_offsets[i], frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16));
+        }
+        if args.analyse_row_number.is_some() {
+            for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
+                if row_number == i as u8 {
+                    let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
+                    println!();
+                    log(LogLevel::Info, &format!("- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}", i, i, frames[frame_number].image_data.row_offsets[i], start));
+
+                    let mut bytes = "".to_string();
+                    let mut buf = vec![0u8; row.len()];
+                    file.seek(SeekFrom::Start(start))?;
+                    file.read_exact(&mut buf)?;
+                    for b in &buf {
+                        bytes.push_str(&format!("{:02X} ", b));
+                    }
+                    log(LogLevel::Info, &format!("  Data ({} bytes): {}", row.len(), &bytes));
+                    break;
+                }
+            }
+        }
+
+        return Ok(());
+    }
     println!();
     log(LogLevel::Info, &format!("GRP Header:"));
     log(LogLevel::Info, &format!("- Frame count: {}", header.frame_count));

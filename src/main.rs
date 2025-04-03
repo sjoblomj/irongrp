@@ -12,6 +12,22 @@ fn main() -> std::io::Result<()> {
         log(LogLevel::Error, "The 'max-width' argument is only applicable when using the 'tiled' argument.");
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
     }
+    if args.tiled && args.frame_number.is_some() {
+        log(LogLevel::Error, "The 'frame-number' argument is not applicable when using the 'tiled' argument.");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+    }
+    if args.mode == OperationMode::PngToGrp && args.frame_number.is_some() {
+        log(LogLevel::Error, "The 'frame-number' argument is not applicable when using the 'png-to-grp' mode.");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+    }
+    if args.mode != OperationMode::AnalyseGrp && args.analyse_row_number.is_some() {
+        log(LogLevel::Error, "The 'analyse-row-number' argument is only applicable when using the 'analyse-grp' mode.");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+    }
+    if args.frame_number.is_none() && args.analyse_row_number.is_some() {
+        log(LogLevel::Error, "The 'analyse-row-number' argument is only applicable when used together with the 'frame-number' argument.");
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+    }
 
     if args.mode == OperationMode::GrpToPng {
         let output_path = &args.output_path

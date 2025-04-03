@@ -59,7 +59,7 @@ pub fn render_and_save_frames_to_png(
     max_frame_height: u32,
     args: &Args,
 ) -> std::io::Result<()> {
-    if args.tiled {
+    if args.tiled && args.frame_number.is_none() {
         // Tiled mode, so we need to draw all frames into one image.
         // Attempt to set the number of columns to sqrt(number of frames), but adjust if the resulting
         // image is too wide. Thus, if there are 25 frames, we will attempt to create a 5x5 image.
@@ -120,6 +120,9 @@ pub fn render_and_save_frames_to_png(
     } else {
         // Non-tiled mode, so we save each frame as a separate image.
         for (i, frame) in frames.iter().enumerate() {
+            if args.frame_number.is_some() && args.frame_number.unwrap() != i as u16 {
+                continue;
+            }
             let buffer = draw_frame_to_raw_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency);
 
             let image = if args.use_transparency {

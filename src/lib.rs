@@ -20,7 +20,8 @@ pub struct Args {
     #[arg(long, short='p')]
     pub pal_path: Option<String>,
 
-    /// Output directory if input is a GRP file, or output file if input is a directory
+    /// Output directory if input is a GRP file,
+    /// or output file if input is a directory
     #[arg(long, short='o')]
     pub output_path: Option<String>,
 
@@ -43,6 +44,14 @@ pub struct Args {
     /// the GRP itself, this value will be ignored.
     #[arg(long)]
     pub max_width: Option<u32>,
+
+    /// Only outputs or analyses the given frame number.
+    #[arg(long)]
+    pub frame_number: Option<u16>,
+
+    /// Output the data of the given row number for the given frame.
+    #[arg(long)]
+    pub analyse_row_number: Option<u8>,
 
     /// Enable transparency in the PNG images. Default
     /// behavior is to use index 0 in the palette.
