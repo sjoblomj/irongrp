@@ -54,7 +54,7 @@ fn main() -> std::io::Result<()> {
 
         let p = Path::new(output_path);
         if p.exists() && p.is_dir() {
-            log(LogLevel::Error, "Output path is a directory, please provide a file path.");
+            log(LogLevel::Error, "The given output path is a directory; please provide a file path instead.");
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
         if (&args.pal_path).is_none() {

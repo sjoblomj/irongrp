@@ -206,7 +206,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                 }
                 log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes){}", pos, start, start - pos, &bytes));
             }
-            log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end, label));
+            log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label));
             pos = end;
         }
         if pos < file_len {

@@ -113,6 +113,7 @@ pub fn log(level: LogLevel, message: &str) {
 }
 
 
+/// Returns all PNG files in the given directory.
 pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|entry| {

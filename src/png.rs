@@ -245,7 +245,7 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
     }
 
     log(LogLevel::Debug, &format!(
-        "width:  {:X},   new_width: {:X}, x_offset: {:X}",
+        "width:  {:X},  new_width: {:X}, x_offset: {:X}",
         width, new_width, ((width as usize - new_width) / 2)
     ));
     log(LogLevel::Debug, &format!(

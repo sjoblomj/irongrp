@@ -103,9 +103,6 @@ fn read_image_data<R: Read + Seek>(
         let row_offset = u16::from_le_bytes(row_offset_buf);
         row_offsets.push(row_offset);
     }
-    //file.seek(SeekFrom::Start(image_data_offset))?;
-    //let mut row_data = vec![0; file_len as usize];
-    //file.read(&mut row_data)?;
 
     let mut raw_row_data = Vec::with_capacity(height);
     let mut pixels = vec![0; width * height];
@@ -127,19 +124,6 @@ fn read_image_data<R: Read + Seek>(
         let (decoded_row, encoded_length) = decode_grp_rle_row(&row_data, width);
         raw_row_data.push(row_data[0 .. encoded_length].to_vec());
 
-//        let (decoded_row, encoded_length) = decode_grp_rle_row(&row_data[row_pos as usize .. row_data.len()], width);
-//        raw_row_data.push(row_data[row_pos as usize .. row_pos as usize + encoded_length].to_vec());
-
-        //let raw_row = &row_data[row_pos as usize .. row_pos as usize + encoded_length];
-/*
-        let raw_data = row_data[(image_data_offset + row_offset as u64) as u32 .. (encoded_length as u32) as u32];
-        let mut raw_data = vec![0; encoded_length];
-        file.seek(SeekFrom::Start(row_pos))?;
-        file.read(&mut raw_data)?;
-
-        log(LogLevel::Info, &format!("raw_data length: {}", raw_row.len()));
-        raw_row_data.push(raw_row.to_vec());
-*/
         let start = row * width;
         pixels[start .. start + decoded_row.len()].copy_from_slice(&decoded_row);
     }
