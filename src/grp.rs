@@ -93,14 +93,28 @@ fn read_image_data<R: Read + Seek>(
     height: usize,
     image_data_offset: u64,
 ) -> Result<ImageData> {
-    let file_len = file.seek(SeekFrom::End(0))?;
-    file.seek(SeekFrom::Start(image_data_offset))?;
 
+    let file_len = file.seek(SeekFrom::End(0))?;
+    let data_len = file_len
+        .checked_sub(image_data_offset)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+
+    // Seek to the beginning of the row offset table and read the remainder of the file
+    file.seek(SeekFrom::Start(image_data_offset))?;
+    let mut data_block = vec![0; data_len as usize];
+    file.read_exact(&mut data_block)?;
+
+    // Parse row offsets from the beginning of data_block
     let mut row_offsets = Vec::with_capacity(height);
-    for _ in 0..height {
-        let mut row_offset_buf = [0u8; 2];
-        file.read_exact(&mut row_offset_buf)?;
-        let row_offset = u16::from_le_bytes(row_offset_buf);
+    for i in 0..height {
+        let offset_start = i * 2;
+        if  offset_start + 2 > data_block.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Not enough data for row offset table",
+            ));
+        }
+        let row_offset = u16::from_le_bytes([data_block[offset_start], data_block[offset_start + 1]]);
         row_offsets.push(row_offset);
     }
 
@@ -108,21 +122,25 @@ fn read_image_data<R: Read + Seek>(
     let mut pixels = vec![0; width * height];
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
-        let row_pos = image_data_offset + row_offset as u64;
-        if row_pos >= file_len {
+        if row_offset as usize >= data_block.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                format!("Row offset {} is beyond file length {}", row_pos, file_len),
+                format!("Row data offset {} is beyond end of data_block ({})", row_offset, data_block.len()),
             ));
         }
-        log(LogLevel::Debug, &format!("Reading frame row of width {} from offset {}", width, image_data_offset + row_offset as u64));
+        let row_data = &data_block[row_offset as usize ..];
+        log(LogLevel::Debug, &format!("Decoding row {} of width {} from offset {} (length {})", row, width, row_offset, row_data.len()));
 
-        let mut row_data = vec![0; file_len as usize];
-        file.seek(SeekFrom::Start(row_pos))?;
-        file.read(&mut row_data)?;
+        let (decoded_row, encoded_length) = decode_grp_rle_row(row_data, width);
 
-        let (decoded_row, encoded_length) = decode_grp_rle_row(&row_data, width);
-        raw_row_data.push(row_data[0 .. encoded_length].to_vec());
+        if row_offset as usize + encoded_length > data_block.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("Row {} encoded length goes beyond buffer: {} + {} > {}", row, row_offset, encoded_length, data_block.len()),
+            ));
+        }
+
+        raw_row_data.push(row_data[..encoded_length].to_vec());
 
         let start = row * width;
         pixels[start .. start + decoded_row.len()].copy_from_slice(&decoded_row);
