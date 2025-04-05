@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2] - unreleased
 
+### Added
+- Now detects duplicated GRP frames and reuses them to save space.
+
 ### Changed
 - More efficient IO handling of GRP files.
 

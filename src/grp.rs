@@ -1,7 +1,10 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result, Write};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use crate::{Args, CompressionType, LogLevel, log, LOG_LEVEL, list_png_files};
-use crate::png::{png_to_pixels, render_and_save_frames_to_png};
+use crate::png::{png_to_pixels, render_and_save_frames_to_png, TrimmedImage};
 
 #[derive(Debug)]
 pub struct GrpHeader {
@@ -379,8 +382,11 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result
 }
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
-fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: u32, compression_type: &CompressionType) -> std::io::Result<(GrpFrame, u16, u16)> {
-    let image = png_to_pixels(png_file_name, palette)?;
+fn png_to_grpframe(
+    image: TrimmedImage,
+    image_data_offset: u32,
+    compression_type: &CompressionType,
+) -> std::io::Result<(GrpFrame, u16, u16)> {
     let image_data = encode_grp_rle_data(image.width, image.height, image.image_data, compression_type);
 
     Ok((GrpFrame {
@@ -396,17 +402,41 @@ fn png_to_grpframe(png_file_name: &str, palette: &[[u8; 3]], image_data_offset: 
 /// Turn all the given PNG files into a set of GrpFrames.
 fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> std::io::Result<(Vec<GrpFrame>, u16, u16)> {
     let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
-    let mut grp_frames = Vec::with_capacity(png_files.len());
+    let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
+    let mut seen_frames: HashMap<u64, usize> = HashMap::new();
 
     let mut max_width  = 0;
     let mut max_height = 0;
-    for png_file in png_files {
-        let (grp_frame, orig_width, orig_height) = png_to_grpframe(png_file.as_str(), palette, image_data_offset, compression_type)?;
-        image_data_offset += grp_frame.grp_frame_len() as u32;
-        grp_frames.push(grp_frame);
 
-        max_width  = std::cmp::max(max_width,  orig_width);
-        max_height = std::cmp::max(max_height, orig_height);
+    for (index, png_file) in png_files.iter().enumerate() {
+        let image = png_to_pixels(png_file.as_str(), palette)?;
+
+        let mut hasher = DefaultHasher::new();
+        image.image_data.hash(&mut hasher);
+        let pixel_hash = hasher.finish();
+
+        if let Some(&existing_index) = seen_frames.get(&pixel_hash) {
+            let reused: GrpFrame = grp_frames[existing_index].clone();
+            log(LogLevel::Info, &format!("Frame {} is identical to frame {} — reusing image data", index, existing_index));
+
+            grp_frames.push(GrpFrame {
+                x_offset: reused.x_offset,
+                y_offset: reused.y_offset,
+                width:    reused.width,
+                height:   reused.height,
+                image_data_offset: reused.image_data_offset,
+                image_data: reused.image_data.clone(),
+            });
+        } else {
+            let (grp_frame, orig_width, orig_height) = png_to_grpframe(image, image_data_offset, compression_type)?;
+            image_data_offset += grp_frame.grp_frame_len() as u32;
+
+            seen_frames.insert(pixel_hash, grp_frames.len());
+            grp_frames.push(grp_frame);
+
+            max_width  = std::cmp::max(max_width,  orig_width);
+            max_height = std::cmp::max(max_height, orig_height);
+        }
     }
 
     Ok((grp_frames, max_width, max_height))
@@ -447,6 +477,27 @@ pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
 mod tests {
     use proptest::prelude::*;
     use super::*;
+    use std::fs;
+
+    fn create_test_png(path: &str, color: [u8; 3], width: u32, height: u32) {
+        use image::{RgbImage, Rgb};
+        let mut img = RgbImage::new(width, height);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgb(color);
+        }
+        img.save(path).expect("Failed to save test PNG");
+    }
+
+    fn dummy_palette() -> [[u8; 3]; 256] {
+        let mut palette = [[0u8; 3]; 256];
+        for (i, rgb) in palette.iter_mut().enumerate() {
+            rgb[0] = i as u8;
+            rgb[1] = i as u8;
+            rgb[2] = i as u8;
+        }
+        palette
+    }
+
 
     #[test]
     fn test_malformed_header() {
@@ -765,6 +816,64 @@ mod tests {
 
         assert_eq!(result, vec![1, 2, 0]);
         assert_eq!(encoded_length, data.len());
+    }
+
+
+    #[test]
+    fn detects_duplicate_frames() {
+        let palette = dummy_palette();
+        let temp_dir = "temp_test_output";
+        fs::create_dir_all(temp_dir).unwrap();
+
+        let file1 = format!("{}/frame1.png", temp_dir);
+        let file2 = format!("{}/frame2.png", temp_dir);
+        let file3 = format!("{}/frame3.png", temp_dir);
+
+        create_test_png(&file1, [71, 71, 71], 16, 16);
+        create_test_png(&file2, [42, 42, 42], 16, 16);
+        create_test_png(&file3, [71, 71, 71], 16, 16); // identical to file1
+
+        let result = files_to_grp(vec![file1.clone(), file2.clone(), file3.clone()], &palette, &CompressionType::Blizzard).unwrap();
+        let frames = result.0;
+
+        assert_eq!(frames.len(), 3, "Should create three GrpFrames");
+        assert_ne!(
+            frames[0].image_data_offset,
+            frames[1].image_data_offset,
+            "The first two frames should differ",
+        );
+        assert_eq!(
+            frames[0].image_data_offset,
+            frames[2].image_data_offset,
+            "Duplicate frames should be identical"
+        );
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn does_not_deduplicate_different_frames() {
+        let palette = dummy_palette();
+        let temp_dir = "temp_test_output2";
+        fs::create_dir_all(temp_dir).unwrap();
+
+        let file_a = format!("{}/frameA.png", temp_dir);
+        let file_b = format!("{}/frameB.png", temp_dir);
+
+        create_test_png(&file_a, [10, 10, 10], 16, 16);
+        create_test_png(&file_b, [11, 11, 11], 16, 16);
+
+        let result = files_to_grp(vec![file_a.clone(), file_b.clone()], &palette, &CompressionType::Blizzard).unwrap();
+        let frames = result.0;
+
+        assert_eq!(frames.len(), 2, "Should create two GrpFrames");
+        assert_ne!(
+            frames[0].image_data_offset,
+            frames[1].image_data_offset,
+            "Different frames should not share the same image_data_offset"
+        );
+
+        fs::remove_dir_all(temp_dir).unwrap();
     }
 
 
