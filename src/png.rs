@@ -1,6 +1,6 @@
 use crate::{LogLevel, log, Args};
 use crate::grp::GrpFrame;
-use image::{ImageBuffer, DynamicImage};
+use image::{ImageBuffer, DynamicImage, ColorType};
 
 pub struct TrimmedImage {
     pub x_offset: u8,
@@ -146,7 +146,17 @@ pub fn render_and_save_frames_to_png(
     Ok(())
 }
 
-fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
+
+fn map_color_to_palette_index(color: [u8; 3], alpha: Option<u8>, palette: &[[u8; 3]]) -> u8 {
+    if alpha == Some(0) {
+        return 0; // Transparent
+    }
+    if alpha != Some(255) && alpha != None {
+        log(LogLevel::Warn, &format!(
+            "Pixel [{}, {}, {}, {}] is neither fully transparent nor fully opaque. Will drop the alpha channel.",
+            color[0], color[1], color[2], alpha.unwrap()
+        ));
+    }
     let mut best_index = 0;
     let mut best_distance = u32::MAX;
 
@@ -172,30 +182,15 @@ fn map_color_to_palette_index(color: [u8; 3], palette: &[[u8; 3]]) -> u8 {
     best_index as u8
 }
 
-pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<TrimmedImage> {
-    let img = image::open(png_file_name)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
-        .to_rgb8();
-    let (width, height) = img.dimensions();
-    log(LogLevel::Info, &format!("Reading image {}. Dimensions: {:X}x{:X}", png_file_name, width, height));
-
-    let mut pixels_2d = vec![vec![0u8; width as usize]; height as usize];
-    for (y, row) in img.rows().enumerate() {
-        for (x, pixel) in row.enumerate() {
-            let rgb = [pixel[0], pixel[1], pixel[2]];
-            let index = map_color_to_palette_index(rgb, palette);
-            pixels_2d[y][x] = index;
-        }
-    }
-
+fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> (usize, usize, usize, usize) {
     // Determine how many rows/columns to trim from each edge
-    let mut trim_top    = 0;
-    let mut trim_bottom = 0;
-    let mut trim_left   = 0;
-    let mut trim_right  = 0;
+    let mut trim_top: usize    = 0;
+    let mut trim_bottom: usize = 0;
+    let mut trim_left: usize   = 0;
+    let mut trim_right: usize  = 0;
 
     // Top
-    for row in &pixels_2d {
+    for row in pixels_2d {
         if row.iter().all(|&p| p == 0) {
             trim_top += 1;
         } else {
@@ -236,13 +231,18 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
 
 
     // Clamp dimensions
-    let new_width  = width  as usize - trim_left - trim_right;
-    let new_height = height as usize - trim_top - trim_bottom;
-
-    let mut trimmed_pixels = Vec::with_capacity(new_width * new_height);
-    for row in pixels_2d.iter().skip(trim_top).take(new_height) {
-        trimmed_pixels.extend(&row[trim_left..(trim_left + new_width)]);
-    }
+    let new_width = if width as usize > trim_left + trim_right {
+        width as usize - trim_left - trim_right
+    } else {
+        log(LogLevel::Error, "Image is too small to trim. Setting width to 0");
+        0
+    };
+    let new_height = if height as usize > trim_top + trim_bottom {
+        height as usize - trim_top - trim_bottom
+    } else {
+        log(LogLevel::Error, "Image is too small to trim. Setting height to 0");
+        0
+    };
 
     log(LogLevel::Debug, &format!(
         "width:  {:X},  new_width: {:X}, x_offset: {:X}",
@@ -252,13 +252,174 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
         "height: {:X}, new_height: {:X}, y_offset: {:X}",
         height, new_height, ((height as usize - new_height) / 2)
     ));
+
+    return (new_width, new_height, trim_left, trim_top);
+}
+
+pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<TrimmedImage> {
+    let img = image::open(png_file_name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let has_alpha = match img.color() {
+        ColorType::Rgba8 | ColorType::La8 | ColorType::Rgba16 | ColorType::La16 => true,
+        _ => false,
+    };
+    let img_data = img.to_rgba8();
+
+    let (width, height) = img_data.dimensions();
+    log(LogLevel::Info, &format!(
+        "Reading image {}. Has alpha channel: {}. Dimensions: {:X}x{:X}",
+        png_file_name, has_alpha, width, height
+    ));
+
+    let mut pixels_2d = vec![vec![0u8; width as usize]; height as usize];
+    for (y, row) in img_data.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let rgb = [pixel[0], pixel[1], pixel[2]];
+            let alpha = if has_alpha {
+                Some(pixel[3])
+            } else {
+                None
+            };
+            let index = map_color_to_palette_index(rgb, alpha, palette);
+            pixels_2d[y][x] = index;
+        }
+    }
+
+    let (new_width, new_height, trim_left, trim_top) = trim_away_transparency(&pixels_2d, width, height);
+
+    let mut trimmed_pixels = Vec::with_capacity(new_width * new_height);
+    for row in pixels_2d.iter().skip(trim_top).take(new_height) {
+        trimmed_pixels.extend(&row[trim_left .. (trim_left + new_width)]);
+    }
+
     Ok(TrimmedImage {
-        x_offset: trim_left as u8,
-        y_offset: trim_top  as u8,
-        width:  new_width   as u8,
-        height: new_height  as u8,
+        x_offset: trim_left     as u8,
+        y_offset: trim_top      as u8,
+        width:    new_width     as u8,
+        height:   new_height    as u8,
         original_width:  width  as u16,
         original_height: height as u16,
         image_data: trimmed_pixels,
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use image::{RgbImage, RgbaImage, Rgb, Rgba};
+
+    fn dummy_palette() -> [[u8; 3]; 256] {
+        let mut palette = [[0u8; 3]; 256];
+        for (i, color) in palette.iter_mut().enumerate() {
+            color[0] = i as u8;
+            color[1] = i as u8;
+            color[2] = i as u8;
+        }
+        palette
+    }
+
+    fn save_test_png_rgb(path: &str, color: [u8; 3], width: u32, height: u32) {
+        let mut img = RgbImage::new(width, height);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgb(color);
+        }
+        let _ = std::fs::remove_file(path); // Remove if it already exists
+        img.save(path).unwrap();
+    }
+
+    fn save_test_png_rgba(path: &str, color: [u8; 4], width: u32, height: u32) {
+        let mut img = RgbaImage::new(width, height);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba(color);
+        }
+        let _ = std::fs::remove_file(path); // Remove if it already exists
+        img.save(path).unwrap();
+    }
+
+
+    #[test]
+    fn detects_alpha_correctly() {
+        let palette = dummy_palette();
+        let path_rgb = "test_rgb.png";
+        save_test_png_rgb(path_rgb, [100, 100, 100], 8, 8);
+
+        let trimmed_image = png_to_pixels(path_rgb, &palette).unwrap();
+        for i in 0..trimmed_image.image_data.len() {
+            assert!(trimmed_image.image_data[i] == 100);
+        }
+        fs::remove_file(path_rgb).unwrap();
+
+
+        let path_rgba = "test_rgba.png";
+        save_test_png_rgba(path_rgba, [100, 100, 100, 255], 8, 8);
+
+        let trimmed_image = png_to_pixels(path_rgba, &palette).unwrap();
+        for i in 0..trimmed_image.image_data.len() {
+            assert!(trimmed_image.image_data[i] == 100);
+        }
+        fs::remove_file(path_rgba).unwrap();
+    }
+
+    #[test]
+    fn drops_alpha_channel_if_not_0() {
+        let palette = dummy_palette();
+        let path_rgba = "test_rgba_alpha.png";
+        save_test_png_rgba(path_rgba, [100, 100, 100, 71], 8, 8);
+
+        let trimmed_image = png_to_pixels(path_rgba, &palette).unwrap();
+        for i in 0..trimmed_image.image_data.len() {
+            assert!(trimmed_image.image_data[i] == 100);
+        }
+        fs::remove_file(path_rgba).unwrap();
+    }
+
+    #[test]
+    fn trims_transparent_rows_and_columns() {
+        let palette = dummy_palette();
+        let path = "test_trim.png";
+        let mut img = RgbaImage::new(3, 3);
+
+        // Center is visible, borders are fully transparent
+        for y in 0..3 {
+            for x in 0..3 {
+                let alpha = if x == 1 && y == 1 { 255 } else { 0 };
+                img.put_pixel(x, y, Rgba([100, 100, 100, alpha]));
+            }
+        }
+        img.save(path).unwrap();
+
+        let trimmed_image = png_to_pixels(path, &palette).unwrap();
+        assert_eq!(trimmed_image.width,    1);
+        assert_eq!(trimmed_image.height,   1);
+        assert_eq!(trimmed_image.x_offset, 1);
+        assert_eq!(trimmed_image.y_offset, 1);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn maps_non_exact_colors() {
+        let palette = dummy_palette();
+        let path = "test_color.png";
+        save_test_png_rgb(path, [100, 100, 101], 1, 1);
+
+        let trimmed_image = png_to_pixels(path, &palette).unwrap();
+
+        assert!(trimmed_image.image_data[0] == 100); // Closest match
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn whole_image_is_transparent_and_trimmed_away() {
+        let palette = dummy_palette();
+        let path = "test_transparency.png";
+        save_test_png_rgba(path, [0, 0, 0, 0], 1, 1); // Fully transparent
+
+        let trimmed_image = png_to_pixels(path, &palette).unwrap();
+
+        assert_eq!(trimmed_image.image_data.len(), 0);
+        fs::remove_file(path).unwrap();
+    }
 }

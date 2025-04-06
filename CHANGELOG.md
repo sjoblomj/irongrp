@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - More efficient IO handling of GRP files.
+- Now handles PNGs with alpha channels, in the sense that fully transparent pixels will be set to use palette index 0, and any non-opaque pixels will have its alpha value ignored.
+
 
 
 ## [0.1] - 2025-04-03
