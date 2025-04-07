@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 use clap::Parser;
 use irongrp::grp::{grp_to_png, png_to_grp};
 use irongrp::analyse::analyse_grp;
@@ -7,6 +8,7 @@ use irongrp::{LOG_LEVEL, log, LogLevel, OperationMode, Args};
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
     LOG_LEVEL.set(args.log_level.clone()).expect("Failed to set log level");
+    let start_time = SystemTime::now();
 
     if !args.tiled && args.max_width.is_some() {
         log(LogLevel::Error, "The 'max-width' argument is only applicable when using the 'tiled' argument.");
@@ -45,7 +47,7 @@ fn main() -> std::io::Result<()> {
         std::fs::create_dir_all(output_path)?;
 
         grp_to_png(&args)?;
-        log(LogLevel::Info, "Conversion complete");
+        log(LogLevel::Info, &format!("Conversion complete in {} ms", time_elapsed(start_time)));
 
     } else if args.mode == OperationMode::PngToGrp {
         let output_path = &args.output_path
@@ -63,7 +65,7 @@ fn main() -> std::io::Result<()> {
         }
  
         png_to_grp(&args)?;
-        log(LogLevel::Info, &format!("Wrote GRP to {}", output_path));
+        log(LogLevel::Info, &format!("Wrote GRP in {} ms to {}", time_elapsed(start_time), output_path));
 
     } else if args.mode == OperationMode::AnalyseGrp {
         let p = Path::new(&args.input_path);
@@ -73,10 +75,14 @@ fn main() -> std::io::Result<()> {
         }
 
         analyse_grp(&args)?;
-        log(LogLevel::Info, "Analysis complete");
+        log(LogLevel::Info, &format!("Analysis complete in {} ms", time_elapsed(start_time)));
 
     } else {
         log(LogLevel::Error, "Invalid mode!");
     }
     Ok(())
+}
+
+fn time_elapsed(start_time: SystemTime) -> u128 {
+    start_time.elapsed().unwrap_or_else(|_| Duration::new(0, 0)).as_millis()
 }
