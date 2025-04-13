@@ -309,16 +309,26 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     encoded
 }
 
+fn find_longest_overlap(row1: &[u8], row2: &[u8]) -> usize {
+    let max_overlap = std::cmp::min(row1.len(), row2.len());
+
+    for overlap_len in (1..=max_overlap).rev() {
+        if &row1[row1.len() - overlap_len ..] == &row2[..overlap_len] {
+            return overlap_len;
+        }
+    }
+    0
+}
 
 /// Encodes pixels to an RLE-compressed ImageData
 fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type: &CompressionType) -> ImageData {
     let mut raw_row_data = Vec::new();
     let mut rle_data     = Vec::new();
     let mut row_offsets  = Vec::with_capacity(height as usize);
+    let mut prev_row: Option<Vec<u8>> = None;
 
     for row in 0..height {
         let row_start_offset = rle_data.len() + (height * 2) as usize;
-        row_offsets.push(row_start_offset as u16);
 
         let start = row as usize * width as usize;
         let end = start + width as usize;
@@ -327,7 +337,22 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
         log(LogLevel::Debug, &format!("Encoding row {} / {} of width {}. Start: {}, End: {}", row, height, width, start, end));
         let encoded_row = encode_grp_rle_row(row_pixels, compression_type);
         rle_data.extend_from_slice(&encoded_row);
-        raw_row_data.push(encoded_row);
+        raw_row_data.push(encoded_row.clone());
+
+        // If the previous' row has x bytes in the end that are identical to the x first
+        // bytes of the encoded_row, then we can save those x bytes by adjusting the offset.
+        let offset_overlap = if prev_row.is_some() && compression_type == &CompressionType::Optimised {
+            let overlap = find_longest_overlap(&(prev_row.clone().unwrap().to_vec()), &encoded_row.to_vec());
+            if overlap > 1 {
+                log(LogLevel::Debug, &format!("Overlap between row {} and {}: {} bytes", row - 1, row, overlap));
+            }
+            overlap
+        } else {
+            0
+        };
+
+        row_offsets.push((row_start_offset - offset_overlap) as u16);
+        prev_row = Some(encoded_row);
     }
 
     ImageData {
