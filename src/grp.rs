@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Result, Write};
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use crate::{Args, CompressionType, LogLevel, log, LOG_LEVEL, list_png_files};
@@ -403,16 +403,24 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result
         file.write_all(&frame.image_data_offset.to_le_bytes())?;
     }
 
+    // Frames that share the same image_data_offset are duplicated frames.
+    // Only write the image data of those frames once.
+    let mut written_frames = HashSet::new();
+
     // Write image data
     for frame in frames {
-        // Write row offset table
-        for &offset in &frame.image_data.row_offsets {
-            file.write_all(&offset.to_le_bytes())?;
-        }
+        if written_frames.insert(&frame.image_data_offset) {
+            // This offset hasn't been written yet — do it now.
 
-        // Write each row's raw RLE data
-        for row in &frame.image_data.raw_row_data {
-            file.write_all(row)?;
+            // Write row offset table
+            for &offset in &frame.image_data.row_offsets {
+                file.write_all(&offset.to_le_bytes())?;
+            }
+
+            // Write each row's raw RLE data
+            for row in &frame.image_data.raw_row_data {
+                file.write_all(row)?;
+            }
         }
     }
 
