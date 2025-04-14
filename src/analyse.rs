@@ -67,7 +67,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         return Ok(());
     }
     println!();
-    log(LogLevel::Info, &format!("GRP Header:"));
+    log(LogLevel::Info, "GRP Header:");
     log(LogLevel::Info, &format!("- Frame count: {}", header.frame_count));
     log(LogLevel::Info, &format!("- Max width:   {}", header.max_width));
     log(LogLevel::Info, &format!("- Max height:  {}", header.max_height));
@@ -82,12 +82,12 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         actual_max_height = actual_max_height.max(bottom);
     }
 
-    if actual_max_width != header.max_width || actual_max_height != header.max_height {
-        log(LogLevel::Warn, &format!("⚠ Header max dimensions do not match actual frame extents!"));
+    if actual_max_width > header.max_width || actual_max_height > header.max_height {
+        log(LogLevel::Warn, "⚠ Header max dimensions are less than the actual frame extents!");
         log(LogLevel::Warn, &format!("- Actual max width:  {}", actual_max_width));
         log(LogLevel::Warn, &format!("- Actual max height: {}", actual_max_height));
     } else {
-        log(LogLevel::Info, &format!("✔ Header dimensions correctly describe frame bounds"));
+        log(LogLevel::Info, "✔ Header dimensions correctly describe frame bounds");
     }
     println!();
 
@@ -190,7 +190,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
 
 
     if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
-        log(LogLevel::Debug, &format!("File layout diagram:"));
+        log(LogLevel::Debug, "File layout diagram:");
         let mut pos = 0;
         for (start, end, label) in used_ranges {
             if pos < start {

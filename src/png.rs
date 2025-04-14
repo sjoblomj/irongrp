@@ -63,7 +63,7 @@ pub fn render_and_save_frames_to_png(
         // Tiled mode, so we need to draw all frames into one image.
         // Attempt to set the number of columns to sqrt(number of frames), but adjust if the resulting
         // image is too wide. Thus, if there are 25 frames, we will attempt to create a 5x5 image.
-        let mut cols = ((frames.len() as f64).sqrt()).floor() as u32;
+        let mut cols = (frames.len() as f64).sqrt().floor() as u32;
         log(LogLevel::Debug, &format!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
             cols,
@@ -246,14 +246,14 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
 
     log(LogLevel::Debug, &format!(
         "width:  0x{:0>2X} ({}),  new_width: 0x{:0>2X} ({}), x_offset: 0x{:0>2X} ({})",
-        width, width, new_width, new_width, ((width as usize - new_width) / 2), ((width as usize - new_width) / 2) 
+        width, width, new_width, new_width, (width as usize - new_width) / 2, (width as usize - new_width) / 2
     ));
     log(LogLevel::Debug, &format!(
         "height: 0x{:0>2X} ({}), new_height: 0x{:0>2X} ({}), y_offset: 0x{:0>2X} ({})",
-        height, height, new_height, new_height, ((height as usize - new_height) / 2), ((height as usize - new_height) / 2)
+        height, height, new_height, new_height, (height as usize - new_height) / 2, (height as usize - new_height) / 2
     ));
 
-    return (new_width, new_height, trim_left, trim_top);
+    (new_width, new_height, trim_left, trim_top)
 }
 
 pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<TrimmedImage> {
@@ -325,7 +325,7 @@ mod tests {
         for pixel in img.pixels_mut() {
             *pixel = Rgb(color);
         }
-        let _ = std::fs::remove_file(path); // Remove if it already exists
+        let _ = fs::remove_file(path); // Remove if it already exists
         img.save(path).unwrap();
     }
 
@@ -334,7 +334,7 @@ mod tests {
         for pixel in img.pixels_mut() {
             *pixel = Rgba(color);
         }
-        let _ = std::fs::remove_file(path); // Remove if it already exists
+        let _ = fs::remove_file(path); // Remove if it already exists
         img.save(path).unwrap();
     }
 
@@ -347,7 +347,7 @@ mod tests {
 
         let trimmed_image = png_to_pixels(path_rgb, &palette).unwrap();
         for i in 0..trimmed_image.image_data.len() {
-            assert!(trimmed_image.image_data[i] == 100);
+            assert_eq!(trimmed_image.image_data[i], 100);
         }
         fs::remove_file(path_rgb).unwrap();
 
@@ -357,7 +357,7 @@ mod tests {
 
         let trimmed_image = png_to_pixels(path_rgba, &palette).unwrap();
         for i in 0..trimmed_image.image_data.len() {
-            assert!(trimmed_image.image_data[i] == 100);
+            assert_eq!(trimmed_image.image_data[i], 100);
         }
         fs::remove_file(path_rgba).unwrap();
     }
@@ -370,7 +370,7 @@ mod tests {
 
         let trimmed_image = png_to_pixels(path_rgba, &palette).unwrap();
         for i in 0..trimmed_image.image_data.len() {
-            assert!(trimmed_image.image_data[i] == 100);
+            assert_eq!(trimmed_image.image_data[i], 100);
         }
         fs::remove_file(path_rgba).unwrap();
     }
@@ -407,7 +407,7 @@ mod tests {
 
         let trimmed_image = png_to_pixels(path, &palette).unwrap();
 
-        assert!(trimmed_image.image_data[0] == 100); // Closest match
+        assert_eq!(trimmed_image.image_data[0], 100); // Closest match
         fs::remove_file(path).unwrap();
     }
 

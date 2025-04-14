@@ -75,13 +75,13 @@ pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Resu
         file.read_exact(&mut buf)?;
 
         let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        let image_data = read_image_data(file, buf[2] as usize, buf[3] as usize, image_data_offset as u64)?;
+        let image_data = read_image_data(file, buf[2] as usize, buf[3] as usize, image_data_offset)?;
         let grp_frame = GrpFrame {
             x_offset: buf[0],
             y_offset: buf[1],
             width:    buf[2],
             height:   buf[3],
-            image_data_offset: image_data_offset,
+            image_data_offset,
             image_data,
         };
         frames.push(grp_frame.clone());
@@ -96,16 +96,16 @@ fn read_image_data<R: Read + Seek>(
     file:   &mut R,
     width:  usize,
     height: usize,
-    image_data_offset: u64,
+    image_data_offset: u32,
 ) -> Result<ImageData> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
-        .checked_sub(image_data_offset)
+        .checked_sub(image_data_offset as u64)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
 
     // Seek to the beginning of the row offset table and read the remainder of the file
-    file.seek(SeekFrom::Start(image_data_offset))?;
+    file.seek(SeekFrom::Start(image_data_offset as u64))?;
     let mut data_block = vec![0; data_len as usize];
     file.read_exact(&mut data_block)?;
 
@@ -360,7 +360,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
         rle_data.extend_from_slice(&encoded_row);
         raw_row_data.push(encoded_row.clone());
 
-        // If the previous' row has x bytes in the end that are identical to the x first
+        // If the previous row has x bytes in the end that are identical to the x first
         // bytes of the encoded_row, then we can save those x bytes by adjusting the offset.
         let offset_overlap = if prev_row.is_some() && compression_type == &CompressionType::Optimised {
             let overlap = find_longest_overlap(&(prev_row.clone().unwrap().to_vec()), &encoded_row.to_vec());
@@ -372,7 +372,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
             0
         };
 
-        row_offsets.push((row_start_offset - offset_overlap) as u16);
+        row_offsets.push(row_start_offset - offset_overlap);
         prev_row = Some(encoded_row);
     }
 
@@ -441,7 +441,7 @@ fn png_to_grpframe(
     image: TrimmedImage,
     image_data_offset: u32,
     compression_type: &CompressionType,
-) -> std::io::Result<(GrpFrame, u16, u16)> {
+) -> Result<(GrpFrame, u16, u16)> {
     let image_data = encode_grp_rle_data(image.width, image.height, image.image_data, compression_type);
 
     Ok((GrpFrame {
@@ -455,7 +455,7 @@ fn png_to_grpframe(
 }
 
 /// Turn all the given PNG files into a set of GrpFrames.
-fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> std::io::Result<(Vec<GrpFrame>, u16, u16)> {
+fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> Result<(Vec<GrpFrame>, u16, u16)> {
     let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
     let mut seen_frames: HashMap<u64, usize> = HashMap::new();
@@ -498,11 +498,11 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
 }
 
 /// Converts a GRP to PNGs
-pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
+pub fn grp_to_png(args: &Args) -> Result<()> {
     let pal_path = &args.pal_path.as_deref().unwrap();
     let palette  = read_palette(pal_path)?;
 
-    let mut f  = std::fs::File::open(&args.input_path)?;
+    let mut f  = File::open(&args.input_path)?;
     let header = read_grp_header(&mut f)?;
     let frames = read_grp_frames(&mut f, header.frame_count as usize)?;
 
@@ -516,7 +516,7 @@ pub fn grp_to_png(args: &Args) -> std::io::Result<()> {
 }
 
 /// Converts PNGs to a GRP
-pub fn png_to_grp(args: &Args) -> std::io::Result<()> {
+pub fn png_to_grp(args: &Args) -> Result<()> {
     let out_path  = &args.output_path.as_deref().unwrap();
     let pal_path  = &args.pal_path.as_deref().unwrap();
 
