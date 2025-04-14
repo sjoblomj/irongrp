@@ -245,12 +245,12 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
     };
 
     log(LogLevel::Debug, &format!(
-        "width:  {:X},  new_width: {:X}, x_offset: {:X}",
-        width, new_width, ((width as usize - new_width) / 2)
+        "width:  0x{:0>2X} ({}),  new_width: 0x{:0>2X} ({}), x_offset: 0x{:0>2X} ({})",
+        width, width, new_width, new_width, ((width as usize - new_width) / 2), ((width as usize - new_width) / 2) 
     ));
     log(LogLevel::Debug, &format!(
-        "height: {:X}, new_height: {:X}, y_offset: {:X}",
-        height, new_height, ((height as usize - new_height) / 2)
+        "height: 0x{:0>2X} ({}), new_height: 0x{:0>2X} ({}), y_offset: 0x{:0>2X} ({})",
+        height, height, new_height, new_height, ((height as usize - new_height) / 2), ((height as usize - new_height) / 2)
     ));
 
     return (new_width, new_height, trim_left, trim_top);

@@ -69,6 +69,7 @@ pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Resu
     let pos = file.stream_position()?;
     let mut frames = Vec::new();
     for i in 0..frame_count {
+        log(LogLevel::Debug, &format!("Reading GRP Frame {} / {}", i, frame_count));
         file.seek(SeekFrom::Start(pos + (i * 8) as u64))?;
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
@@ -85,6 +86,7 @@ pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Resu
         };
         frames.push(grp_frame.clone());
         log(LogLevel::Debug, &format!("Read GRP Frame {}. x-offset: {}, y-offset: {}, width: {}, height: {}, image-data-offset: {}, number of pixels: {}", i, grp_frame.x_offset, grp_frame.y_offset, grp_frame.width, grp_frame.height, grp_frame.image_data_offset, grp_frame.image_data.converted_pixels.len()));
+        log(LogLevel::Debug, ""); // Give some space in the logs
     }
     Ok(frames)
 }
@@ -179,7 +181,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
             }
             let color_index = line_data[data_offset]; // Color index from palette
             data_offset += 1;
-            log(LogLevel::Debug, &format!("Decoding control byte 0x{:0>2X} 0x{:0>2X}. Pixel with palette index {} will be repeated {} times.", control_byte, data_offset, color_index, run_length));
+            log(LogLevel::Debug, &format!("Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). Pixel with palette index {} will be repeated {} times.", control_byte, color_index, data_offset, data_offset, color_index, run_length));
 
             for _ in 0..run_length {
                 if x >= image_width {
@@ -192,19 +194,25 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
 
         } else { // Normal - copy x pixels directly
             let copy_length = control_byte as usize;
+
             log(LogLevel::Debug, &format!("Normal decoding (0x{:0>2X}). Will copy {} pixels.", control_byte, copy_length));
+            let mut bytes_for_logging = "".to_string();
+
             for _ in 0..copy_length {
                 if x >= image_width || data_offset >= line_data.len() {
                     log(LogLevel::Error, &format!("Decoding error: X position ({}) is greater than image width ({}), or data offset ({}) is greater than line length ({}).", x, image_width, data_offset, line_data.len()));
                     break;
                 }
                 line_pixels[x] = line_data[data_offset];
+                bytes_for_logging.push_str(&format!("{:02X} ", line_data[data_offset]));
                 x += 1;
                 data_offset += 1;
             }
             if copy_length == 0 {
                 data_offset += 1;
                 log(LogLevel::Error, "Read instruction to copy 0 pixels - Stepping over");
+            } else {
+                log(LogLevel::Debug, &format!("Normal decoding of {} bytes: {}", copy_length, bytes_for_logging));
             }
         }
     }
@@ -262,7 +270,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             log(LogLevel::Debug, &format!("Encoding: Pixels of the same colour: 0x{:0>2X} ({})", run_len, run_len));
 
             if run_len > same_colour_threshold {
-                log(LogLevel::Debug, &format!("Encoding same colour 0x{:0>2X} ({}) => {} {:2}", run_len, run_len, 0x40 | run_len as u8, current_colour));
+                log(LogLevel::Debug, &format!("Encoding same colour 0x{:0>2X} ({}) => 0x{:0>2X} 0x{:0>2X}", run_len, run_len, 0x40 | run_len as u8, current_colour));
                 encoded.push(0x40 | run_len as u8);
                 encoded.push(current_colour);
                 i += run_len;
@@ -346,6 +354,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
         let end = start + width as usize;
         let row_pixels = &pixels[start..end];
 
+        log(LogLevel::Debug, ""); // Give some space in the logs
         log(LogLevel::Debug, &format!("Encoding row {} / {} of width {}. Start: {}, End: {}", row, height, width, start, end));
         let encoded_row = encode_grp_rle_row(row_pixels, compression_type);
         rle_data.extend_from_slice(&encoded_row);
