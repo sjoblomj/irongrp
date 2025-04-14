@@ -288,13 +288,25 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                         last_colour_len += 1;
                     }
 
-                    if last_colour_len > same_colour_threshold {
-                        run_len -= same_colour_threshold;
-                        break;
-                    }
-                    if run_len >= 63 {
-                        break;
-                    }
+                    if compression_type == &CompressionType::Blizzard {
+                        if run_len >= 63 {
+                            break;
+                        }
+                        if last_colour_len > same_colour_threshold {
+                            run_len -= same_colour_threshold;
+                            break;
+                        }
+                    } else {
+                        // This order can save a few bytes in some cases, but it's not how Blizzard
+                        // did things
+                        if last_colour_len > same_colour_threshold {
+                            run_len -= same_colour_threshold;
+                            break;
+                        }
+                        if run_len >= 63 {
+                            break;
+                        }
+                     }
                     run_len += 1;
                 }
 
@@ -739,6 +751,22 @@ mod tests {
         assert_eq!(encoded_optim, vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x4, 0x0C, 0x42, 0x77, 0x2C, 0x43, 0x8A, 0x0F, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81]);
         assert_eq!(encoded_blizz.len(), 43);
         assert_eq!(encoded_optim.len(), 43);
+        assert_eq!(encoded_length, original.len());
+    }
+
+    #[test]
+    fn test_battlecruiser_frame8_row36() {
+        let original = vec![0x82, 0x3F, 0x8A, 0x8A, 0x40, 0x8A, 0x40, 0x8B, 0x8B, 0x8B, 0x40, 0x40, 0x8B, 0x8B, 0x40, 0x40, 0x8A, 0x8A, 0xA8, 0x0C, 0x0C, 0x09, 0x09, 0x08, 0x95, 0x95, 0x95, 0x7D, 0x7D, 0x97, 0x97, 0x45, 0x45, 0x45, 0x91, 0x91, 0x92, 0x9B, 0x2C, 0x8A, 0x8B, 0x40, 0x8B, 0x40, 0x8D, 0x92, 0x47, 0x91, 0x49, 0x49, 0x47, 0x40, 0x8B, 0x8B, 0x40, 0x42, 0x92, 0x49, 0x91, 0x91, 0x49, 0x49, 0x40, 0x40, 0x40, 0x15, 0x40, 0x45, 0x49, 0x47, 0x91, 0x91, 0x92, 0x43, 0x8A, 0x8A, 0x8A, 0x95, 0x51, 0x9A, 0x9A, 0x9A, 0x7D, 0x7D, 0x97, 0x95, 0x8A, 0x81];
+        let width = 87;
+
+        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
+        let encoded_blizz = encode_grp_rle_row(&decoded, &CompressionType::Blizzard);
+        let encoded_optim = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
+
+        assert_eq!(encoded_blizz, original);
+        assert_eq!(encoded_optim, vec![130, 5, 138, 138, 64, 138, 64, 67, 139, 14, 64, 64, 139, 139, 64, 64, 138, 138, 168, 12, 12, 9, 9, 8, 67, 149, 4, 125, 125, 151, 151, 67, 69, 28, 145, 145, 146, 155, 44, 138, 139, 64, 139, 64, 141, 146, 71, 145, 73, 73, 71, 64, 139, 139, 64, 66, 146, 73, 145, 145, 73, 73, 68, 64, 7, 69, 73, 71, 145, 145, 146, 67, 67, 138, 2, 149, 81, 67, 154, 5, 125, 125, 151, 149, 138, 129]);
+        assert_eq!(encoded_blizz.len(), 88);
+        assert_eq!(encoded_optim.len(), 86);
         assert_eq!(encoded_length, original.len());
     }
 
