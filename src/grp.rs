@@ -348,7 +348,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
     let mut prev_row: Option<Vec<u8>> = None;
 
     for row in 0..height {
-        let row_start_offset = rle_data.len() + (height * 2) as usize;
+        let row_start_offset = rle_data.len() as u16 + (height as u16 * 2);
 
         let start = row as usize * width as usize;
         let end = start + width as usize;
@@ -367,7 +367,7 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
             if overlap > 1 {
                 log(LogLevel::Debug, &format!("Overlap between row {} and {}: {} bytes", row - 1, row, overlap));
             }
-            overlap
+            overlap as u16
         } else {
             0
         };
