@@ -29,7 +29,7 @@ fn draw_frame_to_raw_buffer(
         for x in 0..frame.width as u32 {
             let idx = (y * frame.width as u32 + x) as usize;
             let palette_index = frame.image_data.converted_pixels[idx] as usize;
-            let color = palette[palette_index];
+            let colour = palette[palette_index];
 
             let out_x = x + x_offset;
             let out_y = y + y_offset;
@@ -40,11 +40,11 @@ fn draw_frame_to_raw_buffer(
                 if palette_index == 0 {
                     buffer[base..base + 4].copy_from_slice(&[0, 0, 0, 0]);
                 } else {
-                    buffer[base..base + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
+                    buffer[base..base + 4].copy_from_slice(&[colour[0], colour[1], colour[2], 255]);
                 }
             } else {
                 let base = pixel_index * 3;
-                buffer[base..base + 3].copy_from_slice(&[color[0], color[1], color[2]]);
+                buffer[base..base + 3].copy_from_slice(&[colour[0], colour[1], colour[2]]);
             }
         }
     }
@@ -144,23 +144,23 @@ pub fn render_and_save_frames_to_png(
 }
 
 
-fn map_color_to_palette_index(color: [u8; 3], alpha: Option<u8>, palette: &[[u8; 3]]) -> u8 {
+fn map_colour_to_palette_index(colour: [u8; 3], alpha: Option<u8>, palette: &[[u8; 3]]) -> u8 {
     if alpha == Some(0) {
         return 0; // Transparent
     }
     if alpha != Some(255) && alpha != None {
         log(LogLevel::Warn, &format!(
             "Pixel [{}, {}, {}, {}] is neither fully transparent nor fully opaque. Will drop the alpha channel.",
-            color[0], color[1], color[2], alpha.unwrap(),
+            colour[0], colour[1], colour[2], alpha.unwrap(),
         ));
     }
     let mut best_index = 0;
     let mut best_distance = u32::MAX;
 
-    for (i, &pal_color) in palette.iter().enumerate() {
-        let dr = color[0] as i32 - pal_color[0]  as i32;
-        let dg = color[1] as i32 - pal_color[1]  as i32;
-        let db = color[2] as i32 - pal_color[2]  as i32;
+    for (i, &pal_colour) in palette.iter().enumerate() {
+        let dr = colour[0] as i32 - pal_colour[0]  as i32;
+        let dg = colour[1] as i32 - pal_colour[1]  as i32;
+        let db = colour[2] as i32 - pal_colour[2]  as i32;
         let dist = (dr * dr + dg * dg + db * db) as u32;
 
         if dist < best_distance {
@@ -171,8 +171,8 @@ fn map_color_to_palette_index(color: [u8; 3], alpha: Option<u8>, palette: &[[u8;
 
     if best_distance != 0 {
         log(LogLevel::Warn, &format!(
-            "Non-exact color match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
-            color[0], color[1], color[2], best_index, best_distance,
+            "Non-exact colour match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
+            colour[0], colour[1], colour[2], best_index, best_distance,
         ));
     }
 
@@ -281,7 +281,7 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
             } else {
                 None
             };
-            let index = map_color_to_palette_index(rgb, alpha, palette);
+            let index = map_colour_to_palette_index(rgb, alpha, palette);
             pixels_2d[y][x] = index;
         }
     }
@@ -314,27 +314,27 @@ mod tests {
 
     fn dummy_palette() -> [[u8; 3]; 256] {
         let mut palette = [[0u8; 3]; 256];
-        for (i, color) in palette.iter_mut().enumerate() {
-            color[0] = i as u8;
-            color[1] = i as u8;
-            color[2] = i as u8;
+        for (i, rgb) in palette.iter_mut().enumerate() {
+            rgb[0] = i as u8;
+            rgb[1] = i as u8;
+            rgb[2] = i as u8;
         }
         palette
     }
 
-    fn save_test_png_rgb(path: &str, color: [u8; 3], width: u32, height: u32) {
+    fn save_test_png_rgb(path: &str, colour: [u8; 3], width: u32, height: u32) {
         let mut img = RgbImage::new(width, height);
         for pixel in img.pixels_mut() {
-            *pixel = Rgb(color);
+            *pixel = Rgb(colour);
         }
         let _ = fs::remove_file(path); // Remove if it already exists
         img.save(path).unwrap();
     }
 
-    fn save_test_png_rgba(path: &str, color: [u8; 4], width: u32, height: u32) {
+    fn save_test_png_rgba(path: &str, colour: [u8; 4], width: u32, height: u32) {
         let mut img = RgbaImage::new(width, height);
         for pixel in img.pixels_mut() {
-            *pixel = Rgba(color);
+            *pixel = Rgba(colour);
         }
         let _ = fs::remove_file(path); // Remove if it already exists
         img.save(path).unwrap();
@@ -402,9 +402,9 @@ mod tests {
     }
 
     #[test]
-    fn maps_non_exact_colors() {
+    fn maps_non_exact_colours() {
         let palette = dummy_palette();
-        let path = "test_color.png";
+        let path = "test_colour.png";
         save_test_png_rgb(path, [100, 100, 101], 1, 1);
 
         let trimmed_image = png_to_pixels(path, &palette).unwrap();

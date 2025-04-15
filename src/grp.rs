@@ -192,7 +192,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
                 control_byte, skip, skip,
             ));
 
-        } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same color X times)
+        } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same colour X times)
             let run_length  = (control_byte & 0x3F) as usize;
             if data_offset >= line_data.len() { // Safety check
                 log(LogLevel::Error, &format!(
@@ -201,11 +201,11 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
                 ));
                 break;
             }
-            let color_index = line_data[data_offset]; // Color index from palette
+            let colour_index = line_data[data_offset]; // Colour index from palette
             data_offset += 1;
             log(LogLevel::Debug, &format!(
                 "Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). Pixel with palette index {} will be repeated {} times.",
-                control_byte, color_index, data_offset, data_offset, color_index, run_length,
+                control_byte, colour_index, data_offset, data_offset, colour_index, run_length,
             ));
 
             for _ in 0..run_length {
@@ -216,7 +216,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
                     ));
                     break;
                 }
-                line_pixels[x] = color_index;
+                line_pixels[x] = colour_index;
                 x += 1;
             }
 
@@ -305,7 +305,7 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             encoded.push(0x80 | run_len as u8);
             i += run_len;
 
-        } else { // Case 2: Run of the same color (but not transparent)
+        } else { // Case 2: Run of the same colour (but not transparent)
             let mut run_len = 1;
             while i + run_len < row_pixels.len()
                 && row_pixels[i + run_len] == current_colour
@@ -601,11 +601,11 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn create_test_png(path: &str, color: [u8; 3], width: u32, height: u32) {
+    fn create_test_png(path: &str, colour: [u8; 3], width: u32, height: u32) {
         use image::{RgbImage, Rgb};
         let mut img = RgbImage::new(width, height);
         for pixel in img.pixels_mut() {
-            *pixel = Rgb(color);
+            *pixel = Rgb(colour);
         }
         img.save(path).expect("Failed to save test PNG");
     }
@@ -671,8 +671,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_solid_color_run() {
-        let data = vec![0x42, 7]; // repeat color 7 for 2 pixels
+    fn test_decode_solid_colour_run() {
+        let data = vec![0x42, 7]; // repeat colour 7 for 2 pixels
 
         let (result, encoded_length) = decode_grp_rle_row(&data, 2);
 
@@ -716,14 +716,14 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_solid_color_run() {
-        // A row with 4 pixels of the same color (e.g. 7)
+    fn test_encode_solid_colour_run() {
+        // A row with 4 pixels of the same colour (e.g. 7)
         let row = vec![7; 4];
 
         let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
         let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
 
-        // 0x40 means repeated color; 0x40 | 4 = 0x44, followed by the color
+        // 0x40 means repeated colour; 0x40 | 4 = 0x44, followed by the colour
         assert_eq!(encoded_blizz, vec![0x44, 7]);
         assert_eq!(encoded_optim, vec![0x44, 7]);
     }
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_max_solid_color_run() {
+    fn test_encode_max_solid_colour_run() {
         let row = vec![12; 63];
 
         let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
@@ -895,14 +895,14 @@ mod tests {
 
     #[test]
     fn test_roundtrip_edge_cases() {
-        let max_transparent = vec![0; 127];
-        let max_solid_color = vec![42; 63];
+        let max_transparent  = vec![0; 127];
+        let max_solid_colour = vec![42; 63];
         let max_raw_copy: Vec<u8> = (0..63).collect();
         let combo = [&[0; 3][..], &[5; 5][..], &[1, 2, 3][..]].concat();
 
         let edge_cases = vec![
             max_transparent,
-            max_solid_color,
+            max_solid_colour,
             max_raw_copy,
             combo,
         ];
@@ -920,11 +920,10 @@ mod tests {
          }
     }
 
-
     #[test]
     fn test_decode_truncated_run_length() {
-        // Claims to repeat a color, but color byte is missing
-        let data = vec![0x41]; // run-length of 1, but no color follows
+        // Claims to repeat a colour, but colour byte is missing
+        let data = vec![0x41]; // run-length of 1, but no colour follows
 
         let (result, encoded_length) = decode_grp_rle_row(&data, 1);
 
@@ -936,7 +935,7 @@ mod tests {
     #[test]
     fn test_decode_run_exceeds_width() {
         // Claims to repeat 5 pixels but only room for 3
-        let data = vec![0x45, 7]; // run-length of 5 with color 7
+        let data = vec![0x45, 7]; // run-length of 5 with colour 7
 
         let (result, encoded_length) = decode_grp_rle_row(&data, 3);
 
