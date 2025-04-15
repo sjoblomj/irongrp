@@ -66,10 +66,7 @@ pub fn render_and_save_frames_to_png(
         let mut cols = (frames.len() as f64).sqrt().floor() as u32;
         log(LogLevel::Debug, &format!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
-            cols,
-            max_frame_width,
-            max_frame_height,
-            args.max_width.unwrap_or(0)
+            cols, max_frame_width, max_frame_height, args.max_width.unwrap_or(0),
         ));
 
         // The user has requested a maximum width in pixels, so we need to adjust the number of columns down.
@@ -154,7 +151,7 @@ fn map_color_to_palette_index(color: [u8; 3], alpha: Option<u8>, palette: &[[u8;
     if alpha != Some(255) && alpha != None {
         log(LogLevel::Warn, &format!(
             "Pixel [{}, {}, {}, {}] is neither fully transparent nor fully opaque. Will drop the alpha channel.",
-            color[0], color[1], color[2], alpha.unwrap()
+            color[0], color[1], color[2], alpha.unwrap(),
         ));
     }
     let mut best_index = 0;
@@ -175,7 +172,7 @@ fn map_color_to_palette_index(color: [u8; 3], alpha: Option<u8>, palette: &[[u8;
     if best_distance != 0 {
         log(LogLevel::Warn, &format!(
             "Non-exact color match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
-            color[0], color[1], color[2], best_index, best_distance
+            color[0], color[1], color[2], best_index, best_distance,
         ));
     }
 
@@ -225,8 +222,9 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
         }
     }
     log(LogLevel::Debug, &format!(
-        "Trimming {} rows from top, {} from bottom, {} from left, {} from right",
-        trim_top, trim_bottom, trim_left, trim_right
+        "Trimming 0x{:0>2X} ({}) rows from top, 0x{:0>2X} ({}) from bottom, \
+        0x{:0>2X} ({}) from left, 0x{:0>2X} ({}) from right",
+        trim_top, trim_top, trim_bottom, trim_bottom, trim_left, trim_left, trim_right, trim_right,
     ));
 
 
@@ -246,11 +244,13 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
 
     log(LogLevel::Debug, &format!(
         "width:  0x{:0>2X} ({}),  new_width: 0x{:0>2X} ({}), x_offset: 0x{:0>2X} ({})",
-        width, width, new_width, new_width, (width as usize - new_width) / 2, (width as usize - new_width) / 2
+        width, width, new_width, new_width,
+        (width as usize - new_width) / 2, (width as usize - new_width) / 2,
     ));
     log(LogLevel::Debug, &format!(
         "height: 0x{:0>2X} ({}), new_height: 0x{:0>2X} ({}), y_offset: 0x{:0>2X} ({})",
-        height, height, new_height, new_height, (height as usize - new_height) / 2, (height as usize - new_height) / 2
+        height, height, new_height, new_height,
+        (height as usize - new_height) / 2, (height as usize - new_height) / 2,
     ));
 
     (new_width, new_height, trim_left, trim_top)
@@ -266,9 +266,10 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
     let img_data = img.to_rgba8();
 
     let (width, height) = img_data.dimensions();
+    log(LogLevel::Debug, "");
     log(LogLevel::Info, &format!(
-        "Reading image {}. Has alpha channel: {}. Dimensions: {:X}x{:X}",
-        png_file_name, has_alpha, width, height
+        "Reading image {}. Has alpha channel: {}. Dimensions: 0x{:0>2X} * 0x{:0>2X} ({} * {})",
+        png_file_name, has_alpha, width, height, width, height,
     ));
 
     let mut pixels_2d = vec![vec![0u8; width as usize]; height as usize];
@@ -285,7 +286,8 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
         }
     }
 
-    let (new_width, new_height, trim_left, trim_top) = trim_away_transparency(&pixels_2d, width, height);
+    let (new_width, new_height, trim_left, trim_top) =
+        trim_away_transparency(&pixels_2d, width, height);
 
     let mut trimmed_pixels = Vec::with_capacity(new_width * new_height);
     for row in pixels_2d.iter().skip(trim_top).take(new_height) {

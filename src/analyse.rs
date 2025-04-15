@@ -20,12 +20,18 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     if args.frame_number.is_some() {
         let frame_number = args.frame_number.unwrap() as usize;
         if  frame_number > frames.len() {
-            log(LogLevel::Error, &format!("Frame number {} is out of range (0-{})", frame_number, frames.len() - 1));
+            log(LogLevel::Error, &format!(
+                "Frame number {} is out of range (0-{})",
+                frame_number, frames.len() - 1,
+            ));
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
         let row_number = args.analyse_row_number.unwrap_or(frames[frame_number].height + 1);
         if  row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
-            log(LogLevel::Error, &format!("Row number {} is out of range (0-{})", row_number, frames[frame_number].height));
+            log(LogLevel::Error, &format!(
+                "Row number {} is out of range (0-{})",
+                row_number, frames[frame_number].height,
+            ));
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
 
@@ -39,17 +45,24 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         log(LogLevel::Info, &format!("- Y offset: {}", frames[frame_number].y_offset));
         log(LogLevel::Info, &format!("- Width:    {}", frames[frame_number].width));
         log(LogLevel::Info, &format!("- Height:   {}", frames[frame_number].height));
-        log(LogLevel::Info, &format!("- This frames image data offset: 0x{:X}", frames[frame_number].image_data_offset));
-        log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:X}", next_offset));
+        log(LogLevel::Info, &format!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset));
+        log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:0>2X}", next_offset));
         for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
-            log(LogLevel::Info, &format!("- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}", i, i, frames[frame_number].image_data.row_offsets[i], frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16));
+            log(LogLevel::Info, &format!(
+                "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
+                i, i, frames[frame_number].image_data.row_offsets[i],
+                frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16,
+            ));
         }
         if args.analyse_row_number.is_some() {
             for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 if row_number == i as u8 {
                     let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
                     println!();
-                    log(LogLevel::Info, &format!("- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}", i, i, frames[frame_number].image_data.row_offsets[i], start));
+                    log(LogLevel::Info, &format!(
+                        "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
+                        i, i, frames[frame_number].image_data.row_offsets[i], start,
+                    ));
 
                     let mut bytes = "".to_string();
                     let mut buf = vec![0u8; row.len()];
@@ -105,7 +118,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
             let start = data_offset + frame.image_data.row_offsets[i] as u64;
             let end = start + row.len() as u64;
-            used_ranges.push((start, end, format!("Frame {: >2}: Image data for row {: >2} ({} bytes)", frame_index, i, end - start)));
+            used_ranges.push((start, end, format!(
+                "Frame {: >2}: Image data for row {: >2} ({} bytes)",
+                frame_index, i, end - start,
+            )));
         }
     }
 
@@ -143,7 +159,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                 log(LogLevel::Debug, "⚠ Overlapping ranges detected:");
                 has_printed_header = true;
             }
-            log(LogLevel::Debug, &format!("[0x{:X}]-[0x{:X}] ({}) overlaps with [0x{:X}]-[0x{:X}] ({})", prev_start, prev_end, prev_label, curr_start, curr_end, curr_label));
+            log(LogLevel::Debug, &format!(
+                "[0x{:0>2X}]-[0x{:0>2X}] ({}) overlaps with [0x{:0>2X}]-[0x{:0>2X}] ({})",
+                prev_start, prev_end, prev_label, curr_start, curr_end, curr_label,
+            ));
             overlap_found = true;
         }
     }
@@ -163,7 +182,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                 log(LogLevel::Warn, "⚠ Unused data found between GRP sections:");
                 has_printed_header = true;
             }
-            log(LogLevel::Warn, &format!("- Gap from [0x{:0>6X}] to [0x{:0>6X}] ({} bytes)", pos, start, start - pos));
+            log(LogLevel::Warn, &format!(
+                "- Gap from [0x{:0>6X}] to [0x{:0>6X}] ({} bytes)",
+                pos, start, start - pos,
+            ));
 
             let mut bytes = "".to_string();
             let mut buf = vec![0u8; (start - pos) as usize];
@@ -181,7 +203,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         if !has_printed_header {
             log(LogLevel::Warn, "⚠ Unused data found between GRP sections:");
         }
-        log(LogLevel::Warn, &format!("- Trailing data from 0x{:0>6X} to end ({} bytes)", pos, file_len - pos));
+        log(LogLevel::Warn, &format!(
+            "- Trailing data from 0x{:0>6X} to end ({} bytes)",
+            pos, file_len - pos,
+        ));
     }
     if !any_gaps {
         log(LogLevel::Info, "✔ No unused data found between GRP sections");
@@ -204,13 +229,19 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                         bytes.push_str(&format!("{:02X} ", b));
                     }
                 }
-                log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes){}", pos, start, start - pos, &bytes));
+                log(LogLevel::Debug, &format!(
+                    "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes){}",
+                    pos, start, start - pos, &bytes,
+                ));
             }
             log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label));
             pos = end;
         }
         if pos < file_len {
-            log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes)", pos, file_len, file_len - pos));
+            log(LogLevel::Debug, &format!(
+                "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes)",
+                pos, file_len, file_len - pos,
+            ));
         }
     }
 
