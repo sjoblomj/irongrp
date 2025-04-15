@@ -542,10 +542,10 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
             ));
 
             grp_frames.push(GrpFrame {
-                x_offset: reused.x_offset,
-                y_offset: reused.y_offset,
-                width:    reused.width,
-                height:   reused.height,
+                x_offset: image.x_offset,
+                y_offset: image.y_offset,
+                width:    image.width,
+                height:   image.height,
                 image_data_offset: reused.image_data_offset,
                 image_data: reused.image_data.clone(),
             });
