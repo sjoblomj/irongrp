@@ -880,17 +880,7 @@ mod tests {
             vec![1, 2, 2, 2, 3, 0, 0],
         ];
 
-        for row in test_rows {
-            let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
-            let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, row.len());
-            let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, row.len());
-
-            assert_eq!(decoded_blizz, row);
-            assert_eq!(decoded_optim, row);
-            assert_eq!(encoded_blizz_length, encoded_blizz.len());
-            assert_eq!(encoded_optim_length, encoded_optim.len());
-        }
+        perform_row_tests(test_rows);
     }
 
     #[test]
@@ -907,17 +897,7 @@ mod tests {
             combo,
         ];
 
-        for row in edge_cases {
-            let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
-            let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, row.len());
-            let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, row.len());
-
-            assert_eq!(decoded_blizz, row);
-            assert_eq!(decoded_optim, row);
-            assert_eq!(encoded_blizz_length, encoded_blizz.len());
-            assert_eq!(encoded_optim_length, encoded_optim.len());
-         }
+        perform_row_tests(edge_cases);
     }
 
     #[test]
@@ -1011,6 +991,20 @@ mod tests {
         );
 
         fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    fn perform_row_tests(test_cases: Vec<Vec<u8>>) {
+        for row in test_cases {
+            let encoded_blizz = encode_grp_rle_row(&row, &CompressionType::Blizzard);
+            let encoded_optim = encode_grp_rle_row(&row, &CompressionType::Optimised);
+            let (decoded_blizz, encoded_blizz_length) = decode_grp_rle_row(&encoded_blizz, row.len());
+            let (decoded_optim, encoded_optim_length) = decode_grp_rle_row(&encoded_optim, row.len());
+
+            assert_eq!(decoded_blizz, row);
+            assert_eq!(decoded_optim, row);
+            assert_eq!(encoded_blizz_length, encoded_blizz.len());
+            assert_eq!(encoded_optim_length, encoded_optim.len());
+        }
     }
 
 

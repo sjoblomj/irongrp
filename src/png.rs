@@ -12,6 +12,25 @@ pub struct TrimmedImage {
     pub image_data: Vec<u8>,
 }
 
+fn create_dynamic_image(
+    use_transparency: bool,
+    max_frame_width:  u32,
+    max_frame_height: u32,
+    buffer: Vec<u8>,
+) -> DynamicImage {
+    if use_transparency {
+        DynamicImage::ImageRgba8(
+            ImageBuffer::from_raw(max_frame_width, max_frame_height, buffer)
+                .expect("Failed to create RGBA image"),
+        )
+    } else {
+        DynamicImage::ImageRgb8(
+            ImageBuffer::from_raw(max_frame_width, max_frame_height, buffer)
+                .expect("Failed to create RGB image"),
+        )
+    }
+}
+
 // Draws a frame into a raw buffer (Vec<u8>)
 fn draw_frame_to_raw_buffer(
     frame: &GrpFrame,
@@ -98,17 +117,7 @@ pub fn render_and_save_frames_to_png(
             }
         }
 
-        let image = if args.use_transparency {
-            DynamicImage::ImageRgba8(
-                ImageBuffer::from_raw(canvas_width, canvas_height, buffer)
-                    .expect("Failed to create RGBA image"),
-            )
-        } else {
-            DynamicImage::ImageRgb8(
-                ImageBuffer::from_raw(canvas_width, canvas_height, buffer)
-                    .expect("Failed to create RGB image"),
-            )
-        };
+        let image = create_dynamic_image(args.use_transparency, canvas_width, canvas_height, buffer);
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
         image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
@@ -121,18 +130,7 @@ pub fn render_and_save_frames_to_png(
                 continue;
             }
             let buffer = draw_frame_to_raw_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency);
-
-            let image = if args.use_transparency {
-                DynamicImage::ImageRgba8(
-                    ImageBuffer::from_raw(max_frame_width, max_frame_height, buffer)
-                        .expect("Failed to create RGBA image"),
-                )
-            } else {
-                DynamicImage::ImageRgb8(
-                    ImageBuffer::from_raw(max_frame_width, max_frame_height, buffer)
-                        .expect("Failed to create RGB image"),
-                )
-            };
+            let image = create_dynamic_image(args.use_transparency, max_frame_width, max_frame_height, buffer);
 
             let output_path = format!("{}/frame_{:03}.png", args.output_path.as_deref().unwrap(), i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
