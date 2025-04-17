@@ -80,19 +80,29 @@ pub fn render_and_save_frames_to_png(
 ) -> std::io::Result<()> {
     if args.tiled && args.frame_number.is_none() {
         // Tiled mode, so we need to draw all frames into one image.
-        // Attempt to set the number of columns to sqrt(number of frames), but adjust if the resulting
-        // image is too wide. Thus, if there are 25 frames, we will attempt to create a 5x5 image.
+        // Attempt to set the number of columns to sqrt(number of frames), so e.g., if there
+        // are 25 frames, we will attempt to create a 5x5 image.
+        // If the user has requested a max_width, then scale down to try to accommodate for that.
+        // So, if there are 25 frames, but the user has requested a max_width that only fits
+        // 3 frames, then the resulting image would be 3x9
         let mut cols = (frames.len() as f64).sqrt().floor() as u32;
         log(LogLevel::Debug, &format!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
             cols, max_frame_width, max_frame_height, args.max_width.unwrap_or(0),
         ));
 
-        // The user has requested a maximum width in pixels, so we need to adjust the number of columns down.
+        // The user has requested a maximum width in pixels,
+        // so we might need to adjust the number of columns down.
         if let Some(max_w) = args.max_width {
             if max_w > max_frame_width && cols * max_frame_width > max_w {
                 cols = (max_w as f64 / max_frame_width as f64).floor() as u32;
                 log(LogLevel::Debug, &format!("Adjusted number of columns to: {}", cols));
+            } else if max_w < max_frame_width {
+                cols = 1;
+                log(LogLevel::Debug, &format!(
+                    "The requested max-width, {}, is smaller than one frame. The resulting image \
+                    will have 1 column and it will be {} pixels wide.",
+                    max_w, max_frame_width));
             }
         }
 
@@ -124,7 +134,7 @@ pub fn render_and_save_frames_to_png(
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
 
     } else {
-        // Non-tiled mode, so we save each frame as a separate image.
+        // Non-tiled mode - save each frame as a separate image.
         for (i, frame) in frames.iter().enumerate() {
             if args.frame_number.is_some() && args.frame_number.unwrap() != i as u16 {
                 continue;
