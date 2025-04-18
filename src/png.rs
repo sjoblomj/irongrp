@@ -1,6 +1,8 @@
-use crate::{LogLevel, log, Args};
 use crate::grp::GrpFrame;
-use image::{ImageBuffer, DynamicImage, ColorType};
+use crate::{log, Args, LogLevel};
+use image::{ColorType, DynamicImage, ImageBuffer};
+use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub struct TrimmedImage {
     pub x_offset: u8,
@@ -135,16 +137,57 @@ pub fn render_and_save_frames_to_png(
 
     } else {
         // Non-tiled mode - save each frame as a separate image.
+
+        // The following two HashMaps are used for printing duplicates
+        // Map: image_data_offset -> list of frame indices
+        let mut offset_map: HashMap<u32, Vec<usize>> = HashMap::new();
+        // Map: image hash -> list of frame indices
+        let mut image_hash_map: HashMap<u64, Vec<usize>> = HashMap::new();
+
         for (i, frame) in frames.iter().enumerate() {
-            if args.frame_number.is_some() && args.frame_number.unwrap() != i as u16 {
+            if args.frame_number == Some(i as u16) {
                 continue;
             }
+            offset_map.entry(frame.image_data_offset)
+                .or_default()
+                .push(i);
+
             let buffer = draw_frame_to_raw_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency);
-            let image = create_dynamic_image(args.use_transparency, max_frame_width, max_frame_height, buffer);
+            let image = create_dynamic_image(args.use_transparency, max_frame_width, max_frame_height, buffer.clone());
+
+            let mut hasher = DefaultHasher::new();
+            buffer.hash(&mut hasher); // Hash the raw RGB(A) buffer
+            let image_hash = hasher.finish();
+
+            image_hash_map.entry(image_hash)
+                .or_default()
+                .push(i);
 
             let output_path = format!("{}/frame_{:03}.png", args.output_path.as_deref().unwrap(), i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
+        }
+
+        let mut offset_duplicates_vec: Vec<(&u32, &Vec<usize>)> = offset_map
+            .iter()
+            .filter(|(_, indices)| indices.len() > 1)
+            .collect();
+        // Sort by the lowest frame index in each group
+        offset_duplicates_vec.sort_by_key(|(_, indices)| *indices.iter().min().unwrap());
+
+        let mut offset_duplicates: HashSet<usize> = HashSet::new();
+        for (_, indices) in offset_duplicates_vec {
+            log(LogLevel::Info, &format!("Identical frames: {:?}", indices));
+            offset_duplicates.extend(indices);
+        }
+
+        for (_, indices) in &image_hash_map {
+            if indices.len() > 1 {
+                let overlap = indices.iter().any(|idx| offset_duplicates.contains(idx));
+                if !overlap {
+                    log(LogLevel::Info, &format!("Identical frames with duplicated image data in GRP: {:?}", indices));
+                }
+            }
         }
     }
 
@@ -317,8 +360,8 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{Rgb, RgbImage, Rgba, RgbaImage};
     use std::fs;
-    use image::{RgbImage, RgbaImage, Rgb, Rgba};
 
     fn dummy_palette() -> [[u8; 3]; 256] {
         let mut palette = [[0u8; 3]; 256];
