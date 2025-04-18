@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header};
+use crate::{log, Args, LogLevel, LOG_LEVEL};
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
-use crate::{Args, LOG_LEVEL, LogLevel, log};
-use crate::grp::{read_grp_header, read_grp_frames};
 
 
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
@@ -14,8 +14,12 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     let file_len = file.metadata()?.len();
 
     let header = read_grp_header(&mut file)?;
-    let frames = read_grp_frames(&mut file, header.frame_count as usize)?;
+    let is_uncompressed = detect_uncompressed(&args.input_path, &header)?;
+    let frames = read_grp_frames(&mut file, header.frame_count as usize, is_uncompressed)?;
     println!();
+    if is_uncompressed {
+        log(LogLevel::Warn, "⚠ Uncompressed GRP file ⚠");
+    }
 
     if args.frame_number.is_some() {
         let frame_number = args.frame_number.unwrap() as usize;
@@ -26,7 +30,11 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
             ));
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
-        let row_number = args.analyse_row_number.unwrap_or(frames[frame_number].height + 1);
+        let row_number = if args.analyse_row_number.is_none() || is_uncompressed {
+            frames[frame_number].height + 1
+        } else {
+            args.analyse_row_number.unwrap()
+        };
         if  row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
             log(LogLevel::Error, &format!(
                 "Row number {} is out of range (0-{})",
@@ -47,14 +55,16 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         log(LogLevel::Info, &format!("- Height:   {}", frames[frame_number].height));
         log(LogLevel::Info, &format!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset));
         log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:0>2X}", next_offset));
-        for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
-            log(LogLevel::Info, &format!(
-                "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
-                i, i, frames[frame_number].image_data.row_offsets[i],
-                frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16,
-            ));
+        if !is_uncompressed {
+            for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
+                log(LogLevel::Info, &format!(
+                    "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
+                    i, i, frames[frame_number].image_data.row_offsets[i],
+                    frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16,
+                ));
+            }
         }
-        if args.analyse_row_number.is_some() {
+        if args.analyse_row_number.is_some() && !is_uncompressed {
             for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 if row_number == i as u8 {
                     let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
@@ -116,7 +126,12 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         used_ranges.push((data_offset, row_table_end, label));
 
         for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
-            let start = data_offset + frame.image_data.row_offsets[i] as u64;
+            let row_offset = if !is_uncompressed {
+                frame.image_data.row_offsets[i] as u64
+            } else {
+                frame.width as u64 * i as u64
+            };
+            let start = data_offset + row_offset;
             let end = start + row.len() as u64;
             used_ranges.push((start, end, format!(
                 "Frame {: >2}: Image data for row {: >2} ({} bytes)",

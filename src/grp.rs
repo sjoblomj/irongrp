@@ -1,10 +1,10 @@
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Result, Write};
-use std::collections::{HashSet, HashMap};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use crate::{Args, CompressionType, LogLevel, log, LOG_LEVEL, list_png_files};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png, TrimmedImage};
+use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Result, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
 pub struct GrpHeader {
@@ -31,6 +31,15 @@ pub struct ImageData {
     pub raw_row_data: Vec<Vec<u8>>,
     /// The raw image data, converted to pixels
     pub converted_pixels: Vec<u8>,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+struct FrameDedupKey {
+    image_data: Vec<u8>,
+    x_offset: u8,
+    y_offset: u8,
+    width:    u8,
+    height:   u8,
 }
 
 impl GrpFrame {
@@ -68,7 +77,12 @@ pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<GrpHeader> {
 }
 
 /// Parses all GRP frames
-pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Result<Vec<GrpFrame>> {
+pub fn read_grp_frames<R: Read + Seek>(
+    file: &mut R,
+    frame_count: usize,
+    is_uncompressed: bool,
+) -> Result<Vec<GrpFrame>> {
+
     let pos = file.stream_position()?;
     let mut frames = Vec::new();
     for i in 0..frame_count {
@@ -78,12 +92,30 @@ pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Resu
         file.read_exact(&mut buf)?;
 
         let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        let image_data = read_image_data(file, buf[2] as usize, buf[3] as usize, image_data_offset)?;
+        let width  = buf[2];
+        let height = buf[3];
+
+        let image_data = if is_uncompressed {
+            read_uncompressed_image_data(
+                file,
+                width  as usize,
+                height as usize,
+                image_data_offset,
+            )?
+        } else {
+            read_image_data(
+                file,
+                width  as usize,
+                height as usize,
+                image_data_offset,
+            )?
+        };
+
         let grp_frame = GrpFrame {
             x_offset: buf[0],
             y_offset: buf[1],
-            width:    buf[2],
-            height:   buf[3],
+            width,
+            height,
             image_data_offset,
             image_data,
         };
@@ -100,6 +132,45 @@ pub fn read_grp_frames<R: Read + Seek>(file: &mut R, frame_count: usize) -> Resu
         log(LogLevel::Debug, ""); // Give some space in the logs
     }
     Ok(frames)
+}
+
+/// Reads row offsets and decodes image data
+fn read_uncompressed_image_data<R: Read + Seek>(
+    file:   &mut R,
+    width:  usize,
+    height: usize,
+    image_data_offset: u32,
+) -> Result<ImageData> {
+
+    let file_len = file.seek(SeekFrom::End(0))?;
+    let data_len = file_len
+        .checked_sub(image_data_offset as u64)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+    if data_len < width as u64 * height as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("Wanted to read {} bytes, but only {} are available in file",
+                    width * height, data_len,
+            ),
+        ));
+    }
+
+    file.seek(SeekFrom::Start(image_data_offset as u64))?;
+    let mut pixels = vec![0; width * height];
+    file.read_exact(&mut pixels)?;
+
+    let mut raw_row_data = Vec::with_capacity(height);
+    for row in 0..height {
+        let start = row * width;
+        let row_data = pixels[start..start + width].to_vec();
+        raw_row_data.push(row_data.clone());
+    }
+
+    Ok(ImageData {
+        row_offsets: vec![],
+        raw_row_data,
+        converted_pixels: pixels,
+    })
 }
 
 /// Reads row offsets and decodes image data
@@ -441,9 +512,29 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
     }
 
     ImageData {
-       row_offsets,
-       raw_row_data,
-       converted_pixels: pixels,
+        row_offsets,
+        raw_row_data,
+        converted_pixels: pixels,
+    }
+}
+
+/// Encodes pixels to an uncompressed ImageData
+fn encode_uncompressed_grp(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
+
+    let mut raw_row_data = Vec::with_capacity(height as usize);
+    for row in 0..height {
+        let start = row as usize * width as usize;
+        let row_data = pixels[start..start + width as usize].to_vec();
+        raw_row_data.push(row_data.clone());
+    }
+
+    // In uncompressed GRPs, there is no list of row offsets in each frame, unlike in normal GRPs.
+    // By setting row_offsets to an empty array, we can avoid it being written later.
+    let row_offsets = vec![];
+    ImageData {
+        row_offsets,
+        raw_row_data,
+        converted_pixels: pixels,
     }
 }
 
@@ -506,20 +597,30 @@ fn png_to_grpframe(
     image_data_offset: u32,
     compression_type: &CompressionType,
 ) -> Result<(GrpFrame, u16, u16)> {
-    let image_data = encode_grp_rle_data(image.width, image.height, image.image_data, compression_type);
+
+    let image_data = if compression_type != &CompressionType::None {
+        encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
+    } else {
+        encode_uncompressed_grp(image.width, image.height, image.image_data)
+    };
 
     Ok((GrpFrame {
         x_offset: image.x_offset,
         y_offset: image.y_offset,
-        width:  image.width,
-        height: image.height,
+        width:    image.width,
+        height:   image.height,
         image_data_offset,
         image_data,
     }, image.original_width, image.original_height))
 }
 
 /// Turn all the given PNG files into a set of GrpFrames.
-fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &CompressionType) -> Result<(Vec<GrpFrame>, u16, u16)> {
+fn files_to_grp(
+    png_files: Vec<String>,
+    palette: &[[u8; 3]],
+    compression_type: &CompressionType,
+) -> Result<(Vec<GrpFrame>, u16, u16)> {
+
     let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
     let mut seen_frames: HashMap<u64, usize> = HashMap::new();
@@ -529,12 +630,9 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
 
     for (index, png_file) in png_files.iter().enumerate() {
         let image = png_to_pixels(png_file.as_str(), palette)?;
+        let reuse_key = make_frame_reuse_key(compression_type, &image);
 
-        let mut hasher = DefaultHasher::new();
-        image.image_data.hash(&mut hasher);
-        let pixel_hash = hasher.finish();
-
-        if let Some(&existing_index) = seen_frames.get(&pixel_hash) {
+        if let Some(&existing_index) = seen_frames.get(&reuse_key) {
             let reused: GrpFrame = grp_frames[existing_index].clone();
             log(LogLevel::Info, &format!(
                 "Frame {} is identical to frame {} — reusing image data",
@@ -549,11 +647,13 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
                 image_data_offset: reused.image_data_offset,
                 image_data: reused.image_data.clone(),
             });
+
         } else {
-            let (grp_frame, orig_width, orig_height) = png_to_grpframe(image, image_data_offset, compression_type)?;
+            let (grp_frame, orig_width, orig_height) =
+                png_to_grpframe(image, image_data_offset, compression_type)?;
             image_data_offset += grp_frame.grp_frame_len() as u32;
 
-            seen_frames.insert(pixel_hash, grp_frames.len());
+            seen_frames.insert(reuse_key, grp_frames.len());
             grp_frames.push(grp_frame);
 
             max_width  = std::cmp::max(max_width,  orig_width);
@@ -564,6 +664,73 @@ fn files_to_grp(png_files: Vec<String>, palette: &[[u8; 3]], compression_type: &
     Ok((grp_frames, max_width, max_height))
 }
 
+/// Make a hash of the data that is relevant for determining whether to reuse a frame or not
+fn make_frame_reuse_key(compression_type: &CompressionType, image: &TrimmedImage) -> u64 {
+    if *compression_type != CompressionType::None {
+        // For normal GRPs, we reference a previous frame if the current image data
+        // is identical to a frame we've already seen.
+        let mut hasher = DefaultHasher::new();
+        image.image_data.hash(&mut hasher);
+        hasher.finish()
+
+    } else {
+        // For uncompressed GRPs, we reference a previous frame if both the
+        // current image data, and the metadata (x and y offsets, width, height)
+        // is identical to a frame we've already seen.
+        let key = FrameDedupKey {
+            image_data: image.image_data.clone(),
+            x_offset:   image.x_offset,
+            y_offset:   image.y_offset,
+            width:      image.width,
+            height:     image.height,
+        };
+
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// Detects whether the given GRP is uncompressed (unusual) or not (normal)
+pub fn detect_uncompressed(input_path: &String, header: &GrpHeader) -> Result<bool> {
+
+    let mut file = File::open(input_path)?;
+    let file_len = file.seek(SeekFrom::End(0))?;
+    file.seek(SeekFrom::Start(6))?;
+
+    let mut seen_offsets  = HashSet::new();
+    let mut first_offset  = 0;
+    let mut total_frame_size = 0;
+
+    for _ in 0..header.frame_count {
+
+        let mut buf = [0u8; 8];
+        file.read_exact(&mut buf)?;
+
+        let width  = buf[2];
+        let height = buf[3];
+        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+
+        if seen_offsets.insert(image_data_offset) {
+            total_frame_size += width as u32 * height as u32;
+        }
+
+        if first_offset == 0 {
+            first_offset = image_data_offset;
+        }
+    }
+
+    let is_uncompressed = first_offset + total_frame_size == file_len as u32;
+    let log_level = if is_uncompressed {
+        LogLevel::Warn
+    } else {
+        LogLevel::Debug
+    };
+    log(log_level, &format!("Is uncompressed: {}", is_uncompressed));
+
+    Ok(is_uncompressed)
+}
+
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> Result<()> {
     let pal_path = &args.pal_path.as_deref().unwrap();
@@ -571,7 +738,8 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
 
     let mut f  = File::open(&args.input_path)?;
     let header = read_grp_header(&mut f)?;
-    let frames = read_grp_frames(&mut f, header.frame_count as usize)?;
+    let is_uncompressed = detect_uncompressed(&args.input_path, &header)?;
+    let frames = read_grp_frames(&mut f, header.frame_count as usize, is_uncompressed)?;
 
     render_and_save_frames_to_png(
         &frames,
@@ -597,12 +765,12 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
 
     fn create_test_png(path: &str, colour: [u8; 3], width: u32, height: u32) {
-        use image::{RgbImage, Rgb};
+        use image::{Rgb, RgbImage};
         let mut img = RgbImage::new(width, height);
         for pixel in img.pixels_mut() {
             *pixel = Rgb(colour);
@@ -640,7 +808,7 @@ mod tests {
         let mut cursor = Cursor::new(data);
 
         let _ = read_grp_header(&mut cursor); // skip header
-        let result = read_grp_frames(&mut cursor, 1);
+        let result = read_grp_frames(&mut cursor, 1, false);
 
         assert!(result.is_err());
     }
@@ -655,7 +823,7 @@ mod tests {
 
         let mut cursor = Cursor::new(data);
         let _ = read_grp_header(&mut cursor);
-        let result = read_grp_frames(&mut cursor, 1);
+        let result = read_grp_frames(&mut cursor, 1, false);
         assert!(result.is_err());
     }
 
