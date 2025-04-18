@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 
 
+## [0.3] - 2025-04-19
+
+### Added
+- Support for converting to and from Uncompressed GRPs.
+- Will now print which frames are identical when extracting frames from a GRP.
+- Caching of palette lookups. This gives a speedup of over 80% on larger GRPs.
+
+### Changed
+- If requesting a tiled image with a max-width that is too low to fit one frame, the resulting image will now be 1 column wide and as big as the frame. Previously, it would in this case behave as if no max-width was given.
+
+
+
 ## [0.2] - 2025-04-15
 
 ### Added

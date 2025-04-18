@@ -1,13 +1,13 @@
 [package]
 name = "irongrp"
 edition = "2021"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["Johan Sjöblom <sjoblom.johan@gmail.com>"]
-description = "A Rust tool to convert StarCraft and WarCraft II GRP files to PNG using a PAL color palette."
+description = "A tool to convert StarCraft and WarCraft II GRP files to PNG using a PAL color palette."
 license = "MIT"
 repository = "https://github.com/sjoblomj/irongrp"
 readme = "README.md"
-categories = ["graphics", "game-development"]
+categories = ["graphics", "multimedia::encoding", "parser-implementations", "game-development", "command-line-utilities"]
 keywords = ["starcraft", "warcraft-2", "grp", "graphics", "converter"]
 
 [[bin]]
@@ -15,11 +15,12 @@ name = "irongrp"
 path = "src/main.rs"
 
 [dependencies]
-image = "0.25.5"      # For image manipulation (PNG output)
-clap = { version = "4.0", features = ["derive"] }  # For CLI argument parsing
+image = "0.25.6"      # For image manipulation (PNG handling)
+clap = { version = "4.5.36", features = ["derive"] }  # For CLI argument parsing
+once_cell = "1.21.3" # For caching
 
 [dev-dependencies]
-proptest = "1"
+proptest = "1.6.0"
 
 #[profile.release]
 #opt-level = 3         # Optimize for maximum performance

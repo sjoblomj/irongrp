@@ -1,8 +1,13 @@
 use crate::grp::GrpFrame;
 use crate::{log, Args, LogLevel};
 use image::{ColorType, DynamicImage, ImageBuffer};
+use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Mutex;
+
+type CacheKey = ([u8; 3], Option<u8>);
+static COLOUR_INDEX_CACHE: Lazy<Mutex<HashMap<CacheKey, u8>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub struct TrimmedImage {
     pub x_offset: u8,
@@ -195,6 +200,27 @@ pub fn render_and_save_frames_to_png(
 }
 
 
+fn cached_map_colour_to_palette_index(
+    colour: [u8; 3],
+    alpha: Option<u8>,
+    palette: &[[u8; 3]]
+) -> u8 {
+    let key = (colour, alpha);
+
+    // Attempt to get cached result
+    if let Some(result) = COLOUR_INDEX_CACHE.lock().unwrap().get(&key) {
+        return *result;
+    }
+
+    // Compute if not cached
+    let result = map_colour_to_palette_index(colour, alpha, palette);
+
+    // Insert into cache
+    COLOUR_INDEX_CACHE.lock().unwrap().insert(key, result);
+
+    result
+}
+
 fn map_colour_to_palette_index(colour: [u8; 3], alpha: Option<u8>, palette: &[[u8; 3]]) -> u8 {
     if alpha == Some(0) {
         return 0; // Transparent
@@ -332,7 +358,7 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
             } else {
                 None
             };
-            let index = map_colour_to_palette_index(rgb, alpha, palette);
+            let index = cached_map_colour_to_palette_index(rgb, alpha, palette);
             pixels_2d[y][x] = index;
         }
     }
