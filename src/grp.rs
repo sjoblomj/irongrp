@@ -1,5 +1,6 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png, TrimmedImage};
 use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL};
+use clap::ValueEnum;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -31,6 +32,15 @@ pub struct ImageData {
     pub raw_row_data: Vec<Vec<u8>>,
     /// The raw image data, converted to pixels
     pub converted_pixels: Vec<u8>,
+    /// Type of GRP being represented
+    pub grp_type: GrpType,
+}
+
+#[derive(Clone, ValueEnum, PartialEq, Debug)]
+pub enum GrpType {
+    Normal,
+    Uncompressed,
+    UncompressedExtended,
 }
 
 #[derive(Hash, Eq, PartialEq)]
@@ -38,8 +48,8 @@ struct FrameDedupKey {
     image_data: Vec<u8>,
     x_offset: u8,
     y_offset: u8,
-    width:    u8,
-    height:   u8,
+    width:    u16,
+    height:   u16,
 }
 
 impl GrpFrame {
@@ -91,16 +101,35 @@ pub fn read_grp_frames<R: Read + Seek>(
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
 
-        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let width  = buf[2];
         let height = buf[3];
 
         let image_data = if is_uncompressed {
+
+            let has_extended_size = (image_data_offset & 0x8000_0000) != 0;
+            let w: usize = if has_extended_size {
+                log(LogLevel::Debug, &format!(
+                    "Reading Uncompressed frame {} with extended size. Width in file: {}, actual width: {}. \
+                    Offset in file: 0x{:0>2X}, actual offset: 0x{:0>2X}",
+                    i, width, width as usize + 256, image_data_offset, image_data_offset & 0x7FFF_FFFF,
+                ));
+                // If the high bit is set, that means that the frame of the
+                // Uncompressed GRP has a width greater than 256 pixels.
+                // Adjust the width and clear the highest bit of the offset.
+
+                image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
+                width as usize + 256
+            } else {
+                width as usize
+            };
+
             read_uncompressed_image_data(
                 file,
-                width  as usize,
+                w,
                 height as usize,
                 image_data_offset,
+                has_extended_size,
             )?
         } else {
             read_image_data(
@@ -140,6 +169,7 @@ fn read_uncompressed_image_data<R: Read + Seek>(
     width:  usize,
     height: usize,
     image_data_offset: u32,
+    has_extended_size: bool,
 ) -> Result<ImageData> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
@@ -166,10 +196,16 @@ fn read_uncompressed_image_data<R: Read + Seek>(
         raw_row_data.push(row_data.clone());
     }
 
+    let grp_type = if has_extended_size {
+        GrpType::UncompressedExtended
+    } else {
+        GrpType::Uncompressed
+    };
     Ok(ImageData {
         row_offsets: vec![],
         raw_row_data,
         converted_pixels: pixels,
+        grp_type,
     })
 }
 
@@ -242,6 +278,7 @@ fn read_image_data<R: Read + Seek>(
         row_offsets,
         raw_row_data,
         converted_pixels: pixels,
+        grp_type: GrpType::Normal,
     })
 }
 
@@ -470,14 +507,14 @@ fn find_longest_overlap(row1: &[u8], row2: &[u8]) -> usize {
 }
 
 /// Encodes pixels to an RLE-compressed ImageData
-fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type: &CompressionType) -> ImageData {
+fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_type: &CompressionType) -> ImageData {
     let mut raw_row_data = Vec::new();
     let mut rle_data     = Vec::new();
     let mut row_offsets  = Vec::with_capacity(height as usize);
     let mut prev_row: Option<Vec<u8>> = None;
 
     for row in 0..height {
-        let row_start_offset = rle_data.len() as u16 + (height as u16 * 2);
+        let row_start_offset = rle_data.len() as u16 + (height * 2);
 
         let start = row as usize * width as usize;
         let end = start + width as usize;
@@ -515,11 +552,12 @@ fn encode_grp_rle_data(width: u8, height: u8, pixels: Vec<u8>, compression_type:
         row_offsets,
         raw_row_data,
         converted_pixels: pixels,
+        grp_type: GrpType::Normal,
     }
 }
 
 /// Encodes pixels to an uncompressed ImageData
-fn encode_uncompressed_grp(width: u8, height: u8, pixels: Vec<u8>) -> ImageData {
+fn encode_uncompressed_grp(width: u16, height: u16, pixels: Vec<u8>, extended_width: bool) -> ImageData {
 
     let mut raw_row_data = Vec::with_capacity(height as usize);
     for row in 0..height {
@@ -531,10 +569,16 @@ fn encode_uncompressed_grp(width: u8, height: u8, pixels: Vec<u8>) -> ImageData 
     // In uncompressed GRPs, there is no list of row offsets in each frame, unlike in normal GRPs.
     // By setting row_offsets to an empty array, we can avoid it being written later.
     let row_offsets = vec![];
+    let grp_type = if extended_width {
+        GrpType::UncompressedExtended
+    } else {
+        GrpType::Uncompressed
+    };
     ImageData {
         row_offsets,
         raw_row_data,
         converted_pixels: pixels,
+        grp_type,
     }
 }
 
@@ -598,18 +642,34 @@ fn png_to_grpframe(
     compression_type: &CompressionType,
 ) -> Result<(GrpFrame, u16, u16)> {
 
+    let mut offset = image_data_offset;
+    let mut width  = image.width as u8;
+    let height     = image.height as u8;
+
     let image_data = if compression_type != &CompressionType::None {
         encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
+
     } else {
-        encode_uncompressed_grp(image.width, image.height, image.image_data)
+        let extended_width = image.width >= 256;
+        if  extended_width {
+            log(LogLevel::Debug, &format!(
+                "Writing Uncompressed frame with extended size. Actual width: {}, width in file: {}. \
+                    Actual offset: 0x{:0>2X}, offset in file: 0x{:0>2X}",
+                image.width, image.width - 256, image_data_offset, image_data_offset | 0x8000_0000,
+            ));
+            offset |= 0x8000_0000;
+            width = (image.width - 256) as u8;
+        }
+
+        encode_uncompressed_grp(image.width, image.height, image.image_data, extended_width)
     };
 
     Ok((GrpFrame {
         x_offset: image.x_offset,
         y_offset: image.y_offset,
-        width:    image.width,
-        height:   image.height,
-        image_data_offset,
+        width,
+        height,
+        image_data_offset: offset,
         image_data,
     }, image.original_width, image.original_height))
 }
@@ -642,8 +702,8 @@ fn files_to_grp(
             grp_frames.push(GrpFrame {
                 x_offset: image.x_offset,
                 y_offset: image.y_offset,
-                width:    image.width,
-                height:   image.height,
+                width:    reused.width,
+                height:   reused.height,
                 image_data_offset: reused.image_data_offset,
                 image_data: reused.image_data.clone(),
             });
@@ -707,12 +767,22 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader) -> Result<bo
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
 
-        let width  = buf[2];
+        let w      = buf[2];
         let height = buf[3];
-        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+
+        let width: u32 = if (image_data_offset & 0x8000_0000) != 0 {
+            // If the high bit is set, that means that the frame of the
+            // Uncompressed GRP has a width greater than 256 pixels.
+
+            image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
+            w as u32 + 256
+        } else {
+            w as u32
+        };
 
         if seen_offsets.insert(image_data_offset) {
-            total_frame_size += width as u32 * height as u32;
+            total_frame_size += width * height as u32;
         }
 
         if first_offset == 0 {

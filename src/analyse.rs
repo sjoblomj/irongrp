@@ -1,4 +1,4 @@
-use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header};
+use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType};
 use crate::{log, Args, LogLevel, LOG_LEVEL};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         } else {
             args.analyse_row_number.unwrap()
         };
-        if  row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
+        if row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
             log(LogLevel::Error, &format!(
                 "Row number {} is out of range (0-{})",
                 row_number, frames[frame_number].height,
@@ -43,19 +43,25 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
 
+        let width = if frames[frame_number].image_data.grp_type != GrpType::UncompressedExtended {
+            frames[frame_number].width as u16
+        } else {
+            frames[frame_number].width as u16 + 256
+        };
         let next_offset = if frame_number + 1 < frames.len() {
             frames[frame_number + 1].image_data_offset
         } else {
             file_len as u32
         };
         log(LogLevel::Info, &format!("Analyzing frame {}:", frame_number));
+        log(LogLevel::Info, &format!("- GrpType:  {:?}", frames[frame_number].image_data.grp_type));
         log(LogLevel::Info, &format!("- X offset: {}", frames[frame_number].x_offset));
         log(LogLevel::Info, &format!("- Y offset: {}", frames[frame_number].y_offset));
-        log(LogLevel::Info, &format!("- Width:    {}", frames[frame_number].width));
+        log(LogLevel::Info, &format!("- Width:    {}", width));
         log(LogLevel::Info, &format!("- Height:   {}", frames[frame_number].height));
         log(LogLevel::Info, &format!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset));
         log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:0>2X}", next_offset));
-        if !is_uncompressed {
+        if frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 log(LogLevel::Info, &format!(
                     "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
@@ -64,7 +70,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                 ));
             }
         }
-        if args.analyse_row_number.is_some() && !is_uncompressed {
+        if args.analyse_row_number.is_some() && frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 if row_number == i as u8 {
                     let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
@@ -99,7 +105,12 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     let mut actual_max_height = 0;
 
     for frame in &frames {
-        let right  = frame.x_offset as u16 + frame.width  as u16;
+        let width = if frame.image_data.grp_type != GrpType::UncompressedExtended {
+            frame.width as u16
+        } else {
+            frame.width as u16 + 256
+        };
+        let right  = frame.x_offset as u16 + width;
         let bottom = frame.y_offset as u16 + frame.height as u16;
         actual_max_width  = actual_max_width .max(right);
         actual_max_height = actual_max_height.max(bottom);
@@ -126,11 +137,14 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         used_ranges.push((data_offset, row_table_end, label));
 
         for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
-            let row_offset = if !is_uncompressed {
+            let row_offset = if frame.image_data.grp_type == GrpType::Normal {
                 frame.image_data.row_offsets[i] as u64
+            } else if frame.image_data.grp_type == GrpType::UncompressedExtended {
+                (frame.width as u64 + 256) * i as u64
             } else {
                 frame.width as u64 * i as u64
             };
+
             let start = data_offset + row_offset;
             let end = start + row.len() as u64;
             used_ranges.push((start, end, format!(

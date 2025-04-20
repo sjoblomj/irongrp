@@ -1,4 +1,4 @@
-use crate::grp::GrpFrame;
+use crate::grp::{GrpFrame, GrpType};
 use crate::{log, Args, LogLevel};
 use image::{ColorType, DynamicImage, ImageBuffer};
 use once_cell::sync::Lazy;
@@ -12,8 +12,8 @@ static COLOUR_INDEX_CACHE: Lazy<Mutex<HashMap<CacheKey, u8>>> = Lazy::new(|| Mut
 pub struct TrimmedImage {
     pub x_offset: u8,
     pub y_offset: u8,
-    pub width:    u8,
-    pub height:   u8,
+    pub width:    u16,
+    pub height:   u16,
     pub original_width:  u16,
     pub original_height: u16,
     pub image_data: Vec<u8>,
@@ -42,7 +42,7 @@ fn create_dynamic_image(
 fn draw_frame_to_raw_buffer(
     frame: &GrpFrame,
     palette: &[[u8; 3]],
-    max_width: u32,
+    max_width:  u32,
     max_height: u32,
     use_transparency: bool,
 ) -> Vec<u8> {
@@ -50,10 +50,15 @@ fn draw_frame_to_raw_buffer(
 
     let x_offset = frame.x_offset as u32;
     let y_offset = frame.y_offset as u32;
+    let width = if frame.image_data.grp_type == GrpType::UncompressedExtended {
+        256 + frame.width as u32
+    } else {
+        frame.width as u32
+    };
 
     for y in 0..frame.height as u32 {
-        for x in 0..frame.width as u32 {
-            let idx = (y * frame.width as u32 + x) as usize;
+        for x in 0..width {
+            let idx = (y * width + x) as usize;
             let palette_index = frame.image_data.converted_pixels[idx] as usize;
             let colour = palette[palette_index];
 
@@ -374,8 +379,8 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
     Ok(TrimmedImage {
         x_offset: trim_left     as u8,
         y_offset: trim_top      as u8,
-        width:    new_width     as u8,
-        height:   new_height    as u8,
+        width:    new_width     as u16,
+        height:   new_height    as u16,
         original_width:  width  as u16,
         original_height: height as u16,
         image_data: trimmed_pixels,
