@@ -173,7 +173,13 @@ pub fn render_and_save_frames_to_png(
                 .or_default()
                 .push(i);
 
-            let output_path = format!("{}/frame_{:03}.png", args.output_path.as_deref().unwrap(), i);
+            let grp_type = if frame.image_data.grp_type == GrpType::Normal {
+                ""
+            } else {
+                "uncompressed_"
+            };
+
+            let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
             image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
         }

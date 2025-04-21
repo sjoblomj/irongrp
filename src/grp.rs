@@ -681,16 +681,17 @@ fn files_to_grp(
     compression_type: &CompressionType,
 ) -> Result<(Vec<GrpFrame>, u16, u16)> {
 
-    let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
     let mut seen_frames: HashMap<u64, usize> = HashMap::new();
+    let compression = determine_compression_type(&png_files, compression_type.clone());
 
+    let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut max_width  = 0;
     let mut max_height = 0;
 
     for (index, png_file) in png_files.iter().enumerate() {
         let image = png_to_pixels(png_file.as_str(), palette)?;
-        let reuse_key = make_frame_reuse_key(compression_type, &image);
+        let reuse_key = make_frame_reuse_key(&compression, &image);
 
         if let Some(&existing_index) = seen_frames.get(&reuse_key) {
             let reused: GrpFrame = grp_frames[existing_index].clone();
@@ -710,7 +711,7 @@ fn files_to_grp(
 
         } else {
             let (grp_frame, orig_width, orig_height) =
-                png_to_grpframe(image, image_data_offset, compression_type)?;
+                png_to_grpframe(image, image_data_offset, &compression)?;
             image_data_offset += grp_frame.grp_frame_len() as u32;
 
             seen_frames.insert(reuse_key, grp_frames.len());
@@ -722,6 +723,18 @@ fn files_to_grp(
     }
 
     Ok((grp_frames, max_width, max_height))
+}
+
+fn determine_compression_type(png_files: &Vec<String>, compression_type: CompressionType) -> CompressionType {
+    if compression_type != CompressionType::Auto {
+        compression_type
+    } else {
+        if png_files.iter().any(|p| p.contains("uncompressed_")) {
+            CompressionType::Uncompressed
+        } else {
+            CompressionType::Normal
+        }
+    }
 }
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not

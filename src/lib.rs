@@ -30,7 +30,11 @@ pub struct Args {
     pub mode: OperationMode,
 
     /// Compression type to use when creating GRP files.
-    #[arg(long, value_enum, default_value_t = CompressionType::Normal)]
+    /// If omitted or set to 'auto', it will use 'normal'
+    /// compression, unless any of the input PNG file names
+    /// contains the string "uncompressed". It so, it will
+    /// use the 'uncompressed' compression.
+    #[arg(long, value_enum, default_value_t = CompressionType::Auto)]
     pub compression_type: CompressionType,
 
     /// Output all frames in one image. GRPs cannot be
