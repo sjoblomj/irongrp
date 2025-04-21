@@ -30,7 +30,7 @@ pub struct Args {
     pub mode: OperationMode,
 
     /// Compression type to use when creating GRP files.
-    #[arg(long, value_enum, default_value_t = CompressionType::Blizzard)]
+    #[arg(long, value_enum, default_value_t = CompressionType::Normal)]
     pub compression_type: CompressionType,
 
     /// Output all frames in one image. GRPs cannot be
@@ -72,9 +72,10 @@ pub enum OperationMode {
 
 #[derive(Clone, ValueEnum, PartialEq, Debug)]
 pub enum CompressionType {
-    Blizzard,
+    Normal,
     Optimised,
-    None,
+    Uncompressed,
+    Auto,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
