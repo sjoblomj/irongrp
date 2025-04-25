@@ -1,5 +1,5 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png, TrimmedImage};
-use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL};
+use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -36,11 +36,12 @@ pub struct ImageData {
     pub grp_type: GrpType,
 }
 
-#[derive(Clone, ValueEnum, PartialEq, Debug)]
+#[derive(Clone, ValueEnum, PartialEq, Debug, Copy)]
 pub enum GrpType {
     Normal,
     Uncompressed,
     UncompressedExtended,
+    War1,
 }
 
 #[derive(Hash, Eq, PartialEq)]
@@ -69,28 +70,44 @@ fn read_palette(pal_path: &str) -> Result<Vec<[u8; 3]>> {
     Ok(buffer.chunks(3).map(|c| [c[0], c[1], c[2]]).collect())
 }
 
-/// Parses the header of a GRP file
-pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<GrpHeader> {
+/// Parses the header of a GRP file. Returns the header and whether
+/// it was in WarCraft I style or not.
+pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)> {
     let mut buf = [0u8; 6];
     file.read_exact(&mut buf)?;
-    let header = GrpHeader {
-        frame_count: u16::from_le_bytes([buf[0], buf[1]]),
-        max_width:   u16::from_le_bytes([buf[2], buf[3]]),
-        max_height:  u16::from_le_bytes([buf[4], buf[5]]),
+
+    let frame_count     = u16::from_le_bytes([buf[0], buf[1]]);
+    let war1_max_width  = u8 ::from_le_bytes([buf[2]]);
+    let war1_max_height = u8 ::from_le_bytes([buf[3]]);
+    let max_width       = u16::from_le_bytes([buf[2], buf[3]]);
+    let max_height      = u16::from_le_bytes([buf[4], buf[5]]);
+
+    let (war1_style, header) = if war1_max_width == 0 || war1_max_height == 0 {
+        (false, GrpHeader {
+            frame_count,
+            max_width,
+            max_height,
+        })
+    } else {
+        (true, GrpHeader {
+            frame_count,
+            max_width:  war1_max_width  as u16,
+            max_height: war1_max_height as u16,
+        })
     };
 
     log(LogLevel::Debug, &format!(
-        "Read GRP Header. Frame count: {}, max width: {}, max_height: {}",
-        header.frame_count, header.max_width, header.max_height,
+        "Read GRP Header. War1 style: {}, Frame count: {}, max width: {}, max_height: {}",
+        header.frame_count, war1_style, header.max_width, header.max_height,
     ));
-    Ok(header)
+    Ok((header, war1_style))
 }
 
 /// Parses all GRP frames
 pub fn read_grp_frames<R: Read + Seek>(
     file: &mut R,
     frame_count: usize,
-    is_uncompressed: bool,
+    grp_type: GrpType,
 ) -> Result<Vec<GrpFrame>> {
 
     let pos = file.stream_position()?;
@@ -105,7 +122,7 @@ pub fn read_grp_frames<R: Read + Seek>(
         let width  = buf[2];
         let height = buf[3];
 
-        let image_data = if is_uncompressed {
+        let image_data = if grp_type != GrpType::Normal {
 
             let has_extended_size = (image_data_offset & 0x8000_0000) != 0;
             let w: usize = if has_extended_size {
@@ -124,12 +141,19 @@ pub fn read_grp_frames<R: Read + Seek>(
                 width as usize
             };
 
+            let compression_type = if has_extended_size {
+                // There does not seem to be any War1 GRPs with extended size.
+                // This needs to be changed if there are.
+                GrpType::UncompressedExtended
+            } else {
+                grp_type // Uncompressed or War1
+            };
             read_uncompressed_image_data(
                 file,
                 w,
                 height as usize,
                 image_data_offset,
-                has_extended_size,
+                compression_type,
             )?
         } else {
             read_image_data(
@@ -169,7 +193,7 @@ fn read_uncompressed_image_data<R: Read + Seek>(
     width:  usize,
     height: usize,
     image_data_offset: u32,
-    has_extended_size: bool,
+    grp_type: GrpType,
 ) -> Result<ImageData> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
@@ -196,11 +220,6 @@ fn read_uncompressed_image_data<R: Read + Seek>(
         raw_row_data.push(row_data.clone());
     }
 
-    let grp_type = if has_extended_size {
-        GrpType::UncompressedExtended
-    } else {
-        GrpType::Uncompressed
-    };
     Ok(ImageData {
         row_offsets: vec![],
         raw_row_data,
@@ -594,13 +613,18 @@ fn create_grp_header(frames: &[GrpFrame], max_width: u16, max_height: u16) -> Gr
 
 /// Given a path, GrpHeader and a set of GrpFrames, this function writes a GRP file
 /// to the given path.
-fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame]) -> Result<()> {
+fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame], compression_type: &CompressionType) -> Result<()> {
     let mut file = File::create(path)?;
 
     // Write header
     file.write_all(&header.frame_count.to_le_bytes())?;
-    file.write_all(&header.max_width  .to_le_bytes())?;
-    file.write_all(&header.max_height .to_le_bytes())?;
+    if compression_type == &CompressionType::War1 {
+        file.write_all(&[header.max_width  as u8])?;
+        file.write_all(&[header.max_height as u8])?;
+    } else {
+        file.write_all(&header.max_width .to_le_bytes())?;
+        file.write_all(&header.max_height.to_le_bytes())?;
+    }
 
     // Write frame headers
     for frame in frames {
@@ -646,7 +670,9 @@ fn png_to_grpframe(
     let mut width  = image.width as u8;
     let height     = image.height as u8;
 
-    let image_data = if compression_type != &CompressionType::Uncompressed {
+    let image_data =
+        if compression_type == &CompressionType::Normal || compression_type != &CompressionType::Optimised {
+
         encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
 
     } else {
@@ -683,15 +709,19 @@ fn files_to_grp(
 
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
     let mut seen_frames: HashMap<u64, usize> = HashMap::new();
-    let compression = determine_compression_type(&png_files, compression_type.clone());
 
-    let mut image_data_offset = (6 + png_files.len() * 8) as u32; // Initialize to GRP header size
+    let header_len = if *compression_type == CompressionType::War1 {
+        4
+    } else {
+        6
+    };
+    let mut image_data_offset = (header_len + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut max_width  = 0;
     let mut max_height = 0;
 
     for (index, png_file) in png_files.iter().enumerate() {
         let image = png_to_pixels(png_file.as_str(), palette)?;
-        let reuse_key = make_frame_reuse_key(&compression, &image);
+        let reuse_key = make_frame_reuse_key(&compression_type, &image);
 
         if let Some(&existing_index) = seen_frames.get(&reuse_key) {
             let reused: GrpFrame = grp_frames[existing_index].clone();
@@ -711,7 +741,7 @@ fn files_to_grp(
 
         } else {
             let (grp_frame, orig_width, orig_height) =
-                png_to_grpframe(image, image_data_offset, &compression)?;
+                png_to_grpframe(image, image_data_offset, &compression_type)?;
             image_data_offset += grp_frame.grp_frame_len() as u32;
 
             seen_frames.insert(reuse_key, grp_frames.len());
@@ -725,12 +755,14 @@ fn files_to_grp(
     Ok((grp_frames, max_width, max_height))
 }
 
-fn determine_compression_type(png_files: &Vec<String>, compression_type: CompressionType) -> CompressionType {
-    if compression_type != CompressionType::Auto {
-        compression_type
+fn determine_compression_type(png_files: &Vec<String>, compression_type: &CompressionType) -> CompressionType {
+    if *compression_type != CompressionType::Auto {
+        compression_type.clone()
     } else {
-        if png_files.iter().any(|p| p.contains("uncompressed_")) {
+        if png_files.iter().any(|p| p.contains(&format!("{}_", UNCOMPRESSED_FILENAME))) {
             CompressionType::Uncompressed
+        } else if png_files.iter().any(|p| p.contains(&format!("{}_", WAR1_FILENAME))) {
+            CompressionType::War1
         } else {
             CompressionType::Normal
         }
@@ -739,7 +771,7 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: Compres
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not
 fn make_frame_reuse_key(compression_type: &CompressionType, image: &TrimmedImage) -> u64 {
-    if *compression_type != CompressionType::Uncompressed {
+    if (*compression_type == CompressionType::Normal) || (*compression_type == CompressionType::Optimised) {
         // For normal GRPs, we reference a previous frame if the current image data
         // is identical to a frame we've already seen.
         let mut hasher = DefaultHasher::new();
@@ -765,11 +797,17 @@ fn make_frame_reuse_key(compression_type: &CompressionType, image: &TrimmedImage
 }
 
 /// Detects whether the given GRP is uncompressed (unusual) or not (normal)
-pub fn detect_uncompressed(input_path: &String, header: &GrpHeader) -> Result<bool> {
+pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: bool) -> Result<bool> {
 
     let mut file = File::open(input_path)?;
     let file_len = file.seek(SeekFrom::End(0))?;
-    file.seek(SeekFrom::Start(6))?;
+
+    let header_size = if war1_style {
+        4
+    } else {
+        6
+    };
+    file.seek(SeekFrom::Start(header_size))?;
 
     let mut seen_offsets  = HashSet::new();
     let mut first_offset  = 0;
@@ -820,9 +858,18 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
     let palette  = read_palette(pal_path)?;
 
     let mut f  = File::open(&args.input_path)?;
-    let header = read_grp_header(&mut f)?;
-    let is_uncompressed = detect_uncompressed(&args.input_path, &header)?;
-    let frames = read_grp_frames(&mut f, header.frame_count as usize, is_uncompressed)?;
+    let (header, war1_style) = read_grp_header(&mut f)?;
+    let is_uncompressed = detect_uncompressed(&args.input_path, &header, war1_style)?;
+
+    let grp_type = if is_uncompressed && war1_style {
+        GrpType::War1
+    } else if is_uncompressed {
+        GrpType::Uncompressed
+    } else {
+        GrpType::Normal
+    };
+
+    let frames = read_grp_frames(&mut f, header.frame_count as usize, grp_type)?;
 
     render_and_save_frames_to_png(
         &frames,
@@ -840,9 +887,11 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
 
     let palette   = read_palette(pal_path)?;
     let png_files = list_png_files(&args.input_path)?;
-    let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &args.compression_type)?;
+    let compression_type = determine_compression_type(&png_files, &args.compression_type);
+
+    let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &compression_type)?;
     let grp_header = create_grp_header(&grp_frames, max_width, max_height);
-    write_grp_file(out_path, &grp_header, &grp_frames)
+    write_grp_file(out_path, &grp_header, &grp_frames, &compression_type)
 }
 
 
@@ -875,7 +924,7 @@ mod tests {
     #[test]
     fn test_malformed_header() {
         use std::io::Cursor;
-        let data = vec![0u8; 4]; // too short for a valid header
+        let data = vec![0u8; 3]; // too short for a valid header
         let mut cursor = Cursor::new(data);
 
         let result = read_grp_header(&mut cursor);
@@ -891,7 +940,7 @@ mod tests {
         let mut cursor = Cursor::new(data);
 
         let _ = read_grp_header(&mut cursor); // skip header
-        let result = read_grp_frames(&mut cursor, 1, false);
+        let result = read_grp_frames(&mut cursor, 1, GrpType::Normal);
 
         assert!(result.is_err());
     }
@@ -906,10 +955,55 @@ mod tests {
 
         let mut cursor = Cursor::new(data);
         let _ = read_grp_header(&mut cursor);
-        let result = read_grp_frames(&mut cursor, 1, false);
+        let result = read_grp_frames(&mut cursor, 1, GrpType::Normal);
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_uncompressed_style_header() -> Result<()> {
+        use std::io::Cursor;
+        // Valid header + 1 frame header
+        let raw_header = vec![0x01, 0x00, 0x01, 0x00, 0x01, 0x00]; // 1 frame, 1x1 size
+        let header_len = raw_header.len() as u64;
+        let mut data = vec![];
+        data.extend(raw_header);
+        data.extend(vec![0, 0, 1, 1, 14, 0, 0, 0]); // frame header (offset 14)
+        data.extend(vec![0x71]); // 1 pixel image data
+
+        let mut cursor = Cursor::new(data);
+        let (header, war1_style) = read_grp_header(&mut cursor)?;
+        cursor.seek(SeekFrom::Start(header_len))?;
+        let result = read_grp_frames(&mut cursor, 1, GrpType::Uncompressed);
+        assert_eq!(war1_style, false);
+        assert_eq!(header.frame_count, 1);
+        assert_eq!(header.max_width,   1);
+        assert_eq!(header.max_height,  1);
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_war1_style_header() -> Result<()> {
+        use std::io::Cursor;
+        // Valid header + 1 frame header
+        let raw_header = vec![0x01, 0x00, 0x01, 0x01]; // 1 frame, 1x1 size
+        let header_len = raw_header.len() as u64;
+        let mut data = vec![];
+        data.extend(raw_header);
+        data.extend(vec![0, 0, 1, 1, 12, 0, 0, 0]); // frame header (offset 12)
+        data.extend(vec![0x71]); // 1 pixel image data
+
+        let mut cursor = Cursor::new(data);
+        let (header, war1_style) = read_grp_header(&mut cursor)?;
+        cursor.seek(SeekFrom::Start(header_len))?;
+        let result = read_grp_frames(&mut cursor, 1, GrpType::War1);
+        assert_eq!(war1_style, true);
+        assert_eq!(header.frame_count, 1);
+        assert_eq!(header.max_width,   1);
+        assert_eq!(header.max_height,  1);
+        assert!(result.is_ok());
+        Ok(())
+    }
 
     #[test]
     fn test_decode_transparent_only() {

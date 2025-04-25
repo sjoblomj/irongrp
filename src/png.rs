@@ -1,5 +1,5 @@
 use crate::grp::{GrpFrame, GrpType};
-use crate::{log, Args, LogLevel};
+use crate::{log, UNCOMPRESSED_FILENAME, WAR1_FILENAME, Args, LogLevel};
 use image::{ColorType, DynamicImage, ImageBuffer};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -175,8 +175,10 @@ pub fn render_and_save_frames_to_png(
 
             let grp_type = if frame.image_data.grp_type == GrpType::Normal {
                 ""
+            } else if frame.image_data.grp_type == GrpType::War1 {
+                &format!("{}_", WAR1_FILENAME)
             } else {
-                "uncompressed_"
+                &format!("{}_", UNCOMPRESSED_FILENAME)
             };
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);

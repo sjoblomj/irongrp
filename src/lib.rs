@@ -32,8 +32,8 @@ pub struct Args {
     /// Compression type to use when creating GRP files.
     /// If omitted or set to 'auto', it will use 'normal'
     /// compression, unless any of the input PNG file names
-    /// contains the string "uncompressed". It so, it will
-    /// use the 'uncompressed' compression.
+    /// contains the string "uncompressed" or "war1".
+    /// If so, it will use the corresponding compression.
     #[arg(long, value_enum, default_value_t = CompressionType::Auto)]
     pub compression_type: CompressionType,
 
@@ -79,6 +79,7 @@ pub enum CompressionType {
     Normal,
     Optimised,
     Uncompressed,
+    War1,
     Auto,
 }
 
@@ -134,3 +135,6 @@ pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
     entries.sort();
     Ok(entries)
 }
+
+const UNCOMPRESSED_FILENAME: &str = "uncompressed";
+const WAR1_FILENAME: &str = "war1";

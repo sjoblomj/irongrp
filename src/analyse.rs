@@ -13,13 +13,20 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     let mut file = File::open(&args.input_path)?;
     let file_len = file.metadata()?.len();
 
-    let header = read_grp_header(&mut file)?;
-    let is_uncompressed = detect_uncompressed(&args.input_path, &header)?;
-    let frames = read_grp_frames(&mut file, header.frame_count as usize, is_uncompressed)?;
+    let (header, war1_style) = read_grp_header(&mut file)?;
+    let is_uncompressed = detect_uncompressed(&args.input_path, &header, war1_style)?;
+
+    let grp_type = if is_uncompressed && war1_style {
+        GrpType::War1
+    } else if is_uncompressed {
+        GrpType::Uncompressed
+    } else {
+        GrpType::Normal
+    };
+    let frames = read_grp_frames(&mut file, header.frame_count as usize, grp_type)?;
+
     println!();
-    if is_uncompressed {
-        log(LogLevel::Warn, "⚠ Uncompressed GRP file ⚠");
-    }
+    log(LogLevel::Info, &format!("GRP type: {:?}", grp_type));
 
     if args.frame_number.is_some() {
         let frame_number = args.frame_number.unwrap() as usize;
