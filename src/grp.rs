@@ -98,7 +98,7 @@ pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)
 
     log(LogLevel::Debug, &format!(
         "Read GRP Header. War1 style: {}, Frame count: {}, max width: {}, max_height: {}",
-        header.frame_count, war1_style, header.max_width, header.max_height,
+        war1_style, header.frame_count, header.max_width, header.max_height,
     ));
     Ok((header, war1_style))
 }
@@ -110,7 +110,7 @@ pub fn read_grp_frames<R: Read + Seek>(
     grp_type: GrpType,
 ) -> Result<Vec<GrpFrame>> {
 
-    let pos = file.stream_position()?;
+    let pos = get_header_size(grp_type ==  GrpType::War1) as u64;
     let mut frames = Vec::new();
     for i in 0..frame_count {
         log(LogLevel::Debug, &format!("Reading GRP Frame {} / {}", i, frame_count));
@@ -671,7 +671,7 @@ fn png_to_grpframe(
     let height     = image.height as u8;
 
     let image_data =
-        if compression_type == &CompressionType::Normal || compression_type != &CompressionType::Optimised {
+        if compression_type == &CompressionType::Normal || compression_type == &CompressionType::Optimised {
 
         encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
 
@@ -710,11 +710,7 @@ fn files_to_grp(
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
     let mut seen_frames: HashMap<u64, usize> = HashMap::new();
 
-    let header_len = if *compression_type == CompressionType::War1 {
-        4
-    } else {
-        6
-    };
+    let header_len = get_header_size(*compression_type == CompressionType::War1);
     let mut image_data_offset = (header_len + png_files.len() * 8) as u32; // Initialize to GRP header size
     let mut max_width  = 0;
     let mut max_height = 0;
@@ -755,8 +751,16 @@ fn files_to_grp(
     Ok((grp_frames, max_width, max_height))
 }
 
+fn get_header_size(war1_style: bool) -> usize {
+    if war1_style {
+        4
+    } else {
+        6
+    }
+}
+
 fn determine_compression_type(png_files: &Vec<String>, compression_type: &CompressionType) -> CompressionType {
-    if *compression_type != CompressionType::Auto {
+    let compression = if *compression_type != CompressionType::Auto {
         compression_type.clone()
     } else {
         if png_files.iter().any(|p| p.contains(&format!("{}_", UNCOMPRESSED_FILENAME))) {
@@ -766,7 +770,9 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: &Compre
         } else {
             CompressionType::Normal
         }
-    }
+    };
+    log(LogLevel::Debug, &format!("Will use compression type {}", compression));
+    compression
 }
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not
@@ -801,13 +807,7 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
 
     let mut file = File::open(input_path)?;
     let file_len = file.seek(SeekFrom::End(0))?;
-
-    let header_size = if war1_style {
-        4
-    } else {
-        6
-    };
-    file.seek(SeekFrom::Start(header_size))?;
+    file.seek(SeekFrom::Start(get_header_size(war1_style) as u64))?;
 
     let mut seen_offsets  = HashSet::new();
     let mut first_offset  = 0;
@@ -847,7 +847,7 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
     } else {
         LogLevel::Debug
     };
-    log(log_level, &format!("Is uncompressed: {}", is_uncompressed));
+    log(log_level, &format!("Is uncompressed: {}. Is WarCraft I style: {}", is_uncompressed, war1_style));
 
     Ok(is_uncompressed)
 }
