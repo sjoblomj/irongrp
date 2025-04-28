@@ -5,7 +5,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Result, Seek, SeekFrom, Write};
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
 pub struct GrpHeader {
@@ -73,7 +73,7 @@ fn read_palette(pal_path: &str) -> Result<Vec<[u8; 3]>> {
 /// Parses the header of a GRP file. Returns the header and whether
 /// it was in WarCraft I style or not.
 pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)> {
-    let mut buf = [0u8; 6];
+    let mut buf = [0u8; 8];
     file.read_exact(&mut buf)?;
 
     let frame_count     = u16::from_le_bytes([buf[0], buf[1]]);
@@ -82,18 +82,25 @@ pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)
     let max_width       = u16::from_le_bytes([buf[2], buf[3]]);
     let max_height      = u16::from_le_bytes([buf[4], buf[5]]);
 
-    let (war1_style, header) = if war1_max_width == 0 || war1_max_height == 0 {
-        (false, GrpHeader {
+    let war1_style = determine_grp_style(
+        file,
+        frame_count,
+        war1_max_width,
+        war1_max_height,
+    )?;
+
+    let header = if !war1_style {
+        GrpHeader {
             frame_count,
             max_width,
             max_height,
-        })
+        }
     } else {
-        (true, GrpHeader {
+        GrpHeader {
             frame_count,
             max_width:  war1_max_width  as u16,
             max_height: war1_max_height as u16,
-        })
+        }
     };
 
     log(LogLevel::Debug, &format!(
@@ -101,6 +108,72 @@ pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)
         war1_style, header.frame_count, header.max_width, header.max_height,
     ));
     Ok((header, war1_style))
+}
+
+/// Returns true if the GRP is in War1 style, false otherwise.
+/// If it appears to not be a GRP, it throws an error.
+fn determine_grp_style<R: Read + Seek>(
+    file: &mut R,
+    frame_count: u16,
+    war1_max_width:  u8,
+    war1_max_height: u8,
+) -> Result<bool> {
+
+    if war1_max_width != 0 && war1_max_height != 0 {
+        // This is true for War1 GRPs and Extended GRPs
+        let is_war1_style = try_reading_frame_headers(
+            file,
+            frame_count as usize,
+            get_header_size(true),
+        ).is_ok();
+        if is_war1_style {
+            return Ok(is_war1_style)
+        }
+    }
+    let result = try_reading_frame_headers(file, frame_count as usize, get_header_size(false));
+    if result.is_err() {
+        return Err(result.err().unwrap());
+    }
+    Ok(false)
+}
+
+/// Reads all frame headers and checks that the offsets are within file boundaries.
+/// Returns Error if not.
+fn try_reading_frame_headers<R: Read + Seek>(
+    file: &mut R,
+    frame_count: usize,
+    start_pos: usize,
+) -> Result<()> {
+
+    let file_len = file.seek(SeekFrom::End(0))?;
+    for i in 0..frame_count {
+        file.seek(SeekFrom::Start(start_pos as u64 + (i * 8) as u64))?;
+        let mut buf = [0u8; 8];
+        file.read_exact(&mut buf)?;
+
+        // buf[0] and buf[1] contain x_offset and y_offset, respectively
+        let w = u8::from_le_bytes([buf[2]]);
+        let height = u8::from_le_bytes([buf[3]]);
+        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+
+        let width: u32 = if (image_data_offset & 0x8000_0000) != 0 {
+            // If the high bit is set, that means that the frame of the
+            // Uncompressed GRP has a width greater than 256 pixels.
+
+            image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
+            w as u32 + 256
+        } else {
+            w as u32
+        };
+
+        if width == 0 || height == 0 {
+            return Err(Error::new(ErrorKind::Other, "Frame width or height is zero"));
+        }
+        if image_data_offset > file_len as u32 {
+            return Err(Error::new(ErrorKind::Other, "Image data offset is too large"));
+        }
+    }
+    Ok(())
 }
 
 /// Parses all GRP frames
