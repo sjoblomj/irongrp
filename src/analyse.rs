@@ -1,4 +1,4 @@
-use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType};
+use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::{log, Args, LogLevel, LOG_LEVEL};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         let width = if frames[frame_number].image_data.grp_type != GrpType::UncompressedExtended {
             frames[frame_number].width as u16
         } else {
-            frames[frame_number].width as u16 + 256
+            frames[frame_number].width as u16 + EXTENDED_IMAGE_WIDTH
         };
         let next_offset = if frame_number + 1 < frames.len() {
             frames[frame_number + 1].image_data_offset
@@ -115,7 +115,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         let width = if frame.image_data.grp_type != GrpType::UncompressedExtended {
             frame.width as u16
         } else {
-            frame.width as u16 + 256
+            frame.width as u16 + EXTENDED_IMAGE_WIDTH
         };
         let right  = frame.x_offset as u16 + width;
         let bottom = frame.y_offset as u16 + frame.height as u16;
@@ -147,7 +147,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
             let row_offset = if frame.image_data.grp_type == GrpType::Normal {
                 frame.image_data.row_offsets[i] as u64
             } else if frame.image_data.grp_type == GrpType::UncompressedExtended {
-                (frame.width as u64 + 256) * i as u64
+                (frame.width as u64 + EXTENDED_IMAGE_WIDTH as u64) * i as u64
             } else {
                 frame.width as u64 * i as u64
             };

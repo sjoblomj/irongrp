@@ -154,27 +154,46 @@ fn try_reading_frame_headers<R: Read + Seek>(
         // buf[0] and buf[1] contain x_offset and y_offset, respectively
         let w = u8::from_le_bytes([buf[2]]);
         let height = u8::from_le_bytes([buf[3]]);
-        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
-        let width: u32 = if (image_data_offset & 0x8000_0000) != 0 {
-            // If the high bit is set, that means that the frame of the
-            // Uncompressed GRP has a width greater than 256 pixels.
-
-            image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
-            w as u32 + 256
-        } else {
-            w as u32
-        };
+        let (width, offset) = adjust_width_and_offset_if_extended_when_decoding(w, image_data_offset);
 
         if width == 0 || height == 0 {
             return Err(Error::new(ErrorKind::Other, "Frame width or height is zero"));
         }
-        if image_data_offset > file_len as u32 {
+        if offset > file_len as u32 {
             return Err(Error::new(ErrorKind::Other, "Image data offset is too large"));
         }
     }
     Ok(())
 }
+
+fn offset_is_extended(offset: u32) -> bool {
+    (offset & EXTENDED_OFFSET_BIT) != 0
+}
+
+fn image_should_be_extended(width: u16) -> bool {
+    width >= EXTENDED_IMAGE_WIDTH
+}
+
+fn adjust_width_and_offset_if_extended_when_decoding(width: u8, image_data_offset: u32) -> (u16, u32) {
+    if offset_is_extended(image_data_offset) {
+        // If the high bit is set, that means that the frame of the
+        // Uncompressed GRP has a width greater than 256 pixels.
+
+        let offset = image_data_offset & EXTENDED_OFFSET_BIT - 1; // clear the highest bit
+        return (width as u16 + EXTENDED_IMAGE_WIDTH, offset)
+    };
+    (width as u16, image_data_offset)
+}
+
+fn adjust_width_and_offset_if_extended_when_encoding(width: u16, offset: u32) -> (u16, u32) {
+    if image_should_be_extended(width) {
+        return (width - EXTENDED_IMAGE_WIDTH, offset | EXTENDED_OFFSET_BIT)
+    }
+    (width, offset)
+}
+
 
 /// Parses all GRP frames
 pub fn read_grp_frames<R: Read + Seek>(
@@ -191,41 +210,34 @@ pub fn read_grp_frames<R: Read + Seek>(
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
 
-        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let width  = buf[2];
         let height = buf[3];
 
         let image_data = if grp_type != GrpType::Normal {
 
-            let has_extended_size = (image_data_offset & 0x8000_0000) != 0;
-            let w: usize = if has_extended_size {
+            let (w, offset) = adjust_width_and_offset_if_extended_when_decoding(width, image_data_offset);
+            let has_extended_size = offset_is_extended(image_data_offset);
+            if  has_extended_size {
                 log(LogLevel::Debug, &format!(
-                    "Reading Uncompressed frame {} with extended size. Width in file: {}, actual width: {}. \
-                    Offset in file: 0x{:0>2X}, actual offset: 0x{:0>2X}",
-                    i, width, width as usize + 256, image_data_offset, image_data_offset & 0x7FFF_FFFF,
+                    "Reading Uncompressed frame {} with extended size. Width in file: {}, \
+                    actual width: {}. Offset in file: 0x{:0>2X}, actual offset: 0x{:0>2X}",
+                    i, width, w, image_data_offset, offset,
                 ));
-                // If the high bit is set, that means that the frame of the
-                // Uncompressed GRP has a width greater than 256 pixels.
-                // Adjust the width and clear the highest bit of the offset.
-
-                image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
-                width as usize + 256
-            } else {
-                width as usize
-            };
+            }
 
             let compression_type = if has_extended_size {
                 // There does not seem to be any War1 GRPs with extended size.
-                // This needs to be changed if there are.
+                // The code here needs to be changed if there are.
                 GrpType::UncompressedExtended
             } else {
                 grp_type // Uncompressed or War1
             };
             read_uncompressed_image_data(
                 file,
-                w,
+                w as usize,
                 height as usize,
-                image_data_offset,
+                offset,
                 compression_type,
             )?
         } else {
@@ -749,15 +761,16 @@ fn png_to_grpframe(
         encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
 
     } else {
-        let extended_width = image.width >= 256;
+        let extended_width = image_should_be_extended(image.width);
         if  extended_width {
+            let (w, o) = adjust_width_and_offset_if_extended_when_encoding(image.width, offset);
             log(LogLevel::Debug, &format!(
                 "Writing Uncompressed frame with extended size. Actual width: {}, width in file: {}. \
                     Actual offset: 0x{:0>2X}, offset in file: 0x{:0>2X}",
-                image.width, image.width - 256, image_data_offset, image_data_offset | 0x8000_0000,
+                image.width, w, image_data_offset, o,
             ));
-            offset |= 0x8000_0000;
-            width = (image.width - 256) as u8;
+            offset = o;
+            width  = w as u8;
         }
 
         encode_uncompressed_grp(image.width, image.height, image.image_data, extended_width)
@@ -893,24 +906,16 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
 
         let w      = buf[2];
         let height = buf[3];
-        let mut image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
-        let width: u32 = if (image_data_offset & 0x8000_0000) != 0 {
-            // If the high bit is set, that means that the frame of the
-            // Uncompressed GRP has a width greater than 256 pixels.
+        let (width, offset) = adjust_width_and_offset_if_extended_when_decoding(w, image_data_offset);
 
-            image_data_offset &= 0x7FFF_FFFF; // clear the highest bit
-            w as u32 + 256
-        } else {
-            w as u32
-        };
-
-        if seen_offsets.insert(image_data_offset) {
-            total_frame_size += width * height as u32;
+        if seen_offsets.insert(offset) {
+            total_frame_size += width as u32 * height as u32;
         }
 
         if first_offset == 0 {
-            first_offset = image_data_offset;
+            first_offset = offset;
         }
     }
 
@@ -1444,3 +1449,6 @@ mod tests {
         }
     }
 }
+
+const EXTENDED_OFFSET_BIT: u32 = 0x8000_0000;
+pub const EXTENDED_IMAGE_WIDTH: u16 = 256;

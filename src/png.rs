@@ -1,4 +1,4 @@
-use crate::grp::{GrpFrame, GrpType};
+use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::{log, UNCOMPRESSED_FILENAME, WAR1_FILENAME, Args, LogLevel};
 use image::{ColorType, DynamicImage, ImageBuffer};
 use once_cell::sync::Lazy;
@@ -51,7 +51,7 @@ fn draw_frame_to_raw_buffer(
     let x_offset = frame.x_offset as u32;
     let y_offset = frame.y_offset as u32;
     let width = if frame.image_data.grp_type == GrpType::UncompressedExtended {
-        256 + frame.width as u32
+        frame.width as u32 + EXTENDED_IMAGE_WIDTH as u32
     } else {
         frame.width as u32
     };
