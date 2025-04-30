@@ -284,10 +284,10 @@ fn read_uncompressed_image_data<R: Read + Seek>(
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
         .checked_sub(image_data_offset as u64)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+        .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
     if data_len < width as u64 * height as u64 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
             format!("Wanted to read {} bytes, but only {} are available in file",
                     width * height, data_len,
             ),
@@ -324,7 +324,7 @@ fn read_image_data<R: Read + Seek>(
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
         .checked_sub(image_data_offset as u64)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+        .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
 
     // Seek to the beginning of the row offset table and read the remainder of the file
     file.seek(SeekFrom::Start(image_data_offset as u64))?;
@@ -336,8 +336,8 @@ fn read_image_data<R: Read + Seek>(
     for i in 0..height {
         let offset_start = i * 2;
         if  offset_start + 2 > data_block.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
                 "Not enough data for row offset table",
             ));
         }
@@ -350,8 +350,8 @@ fn read_image_data<R: Read + Seek>(
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
         if row_offset as usize >= data_block.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
                 format!("Row data offset {} is beyond end of data_block ({})", row_offset, data_block.len()),
             ));
         }
@@ -364,8 +364,8 @@ fn read_image_data<R: Read + Seek>(
         let (decoded_row, encoded_length) = decode_grp_rle_row(row_data, width);
 
         if row_offset as usize + encoded_length > data_block.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof, format!(
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof, format!(
                     "Row {} encoded length goes beyond buffer: {} + {} > {}",
                     row, row_offset, encoded_length, data_block.len(),
                 ),
