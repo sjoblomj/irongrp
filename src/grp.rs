@@ -748,17 +748,23 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame], compressi
 fn png_to_grpframe(
     image: TrimmedImage,
     image_data_offset: u32,
-    compression_type: &CompressionType,
-) -> Result<(GrpFrame, u16, u16)> {
+    compression: &CompressionType,
+) -> Result<GrpFrame> {
 
     let mut offset = image_data_offset;
     let mut width  = image.width as u8;
     let height     = image.height as u8;
 
-    let image_data =
-        if compression_type == &CompressionType::Normal || compression_type == &CompressionType::Optimised {
+    let image_data = if compression == &CompressionType::Normal || compression == &CompressionType::Optimised {
 
-        encode_grp_rle_data(image.width, image.height, image.image_data, compression_type)
+        if image.width > u8::MAX as u16 {
+            // The image size was checked when reading the PNGs, but an image width of up to 512
+            // is allowed for Extended Uncompressed GRPs. Here, we're dealing with Normal GRPs,
+            // which have a max width of 255.
+            return Err(Error::new(ErrorKind::InvalidInput, format!(
+                "Width ({}) is above limit of {}", image.width, u8::MAX)))
+        }
+        encode_grp_rle_data(image.width, image.height, image.image_data, compression)
 
     } else {
         let extended_width = image_should_be_extended(image.width);
@@ -776,14 +782,14 @@ fn png_to_grpframe(
         encode_uncompressed_grp(image.width, image.height, image.image_data, extended_width)
     };
 
-    Ok((GrpFrame {
+    Ok(GrpFrame {
         x_offset: image.x_offset,
         y_offset: image.y_offset,
         width,
         height,
         image_data_offset: offset,
         image_data,
-    }, image.original_width, image.original_height))
+    })
 }
 
 /// Turn all the given PNG files into a set of GrpFrames.
@@ -822,9 +828,28 @@ fn files_to_grp(
             });
 
         } else {
-            let (grp_frame, orig_width, orig_height) =
-                png_to_grpframe(image, image_data_offset, &compression_type)?;
+            let orig_width  = image.original_width;
+            let orig_height = image.original_height;
+            let grp_frame = png_to_grpframe(image, image_data_offset, &compression_type)?;
+
             image_data_offset += grp_frame.grp_frame_len() as u32;
+            if offset_is_extended(image_data_offset) {
+                return Err(Error::new(ErrorKind::InvalidInput,
+                    "The image data offset is already too big to add more GRPs!",
+                ));
+            }
+            if *compression_type == CompressionType::War1 &&
+                (grp_frame.width  as u16 + grp_frame.x_offset as u16) > u8::MAX as u16 ||
+                (grp_frame.height as u16 + grp_frame.y_offset as u16) > u8::MAX as u16 {
+                return Err(Error::new(ErrorKind::InvalidInput, format!(
+                    "For compression type {}: \
+                    width ({}) added to x-offset ({}) is {} and must be below {}, or \
+                    height ({}) added to y-offset ({}) is {} and must be below {}. \
+                    Try making the number of rows and columns of all-transparent pixels fewer.",
+                    compression_type, grp_frame.width, grp_frame.x_offset, grp_frame.width + grp_frame.x_offset, u8::MAX,
+                    grp_frame.height, grp_frame.y_offset, grp_frame.height + grp_frame.y_offset, u8::MAX,
+                )));
+            }
 
             seen_frames.insert(reuse_key, grp_frames.len());
             grp_frames.push(grp_frame);

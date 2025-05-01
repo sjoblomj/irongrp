@@ -1,7 +1,8 @@
+use clap::{Parser, ValueEnum};
 use std::fmt;
 use std::fs;
+use std::io::{Error, ErrorKind};
 use std::sync::OnceLock;
-use clap::{Parser, ValueEnum};
 
 pub mod analyse;
 pub mod grp;
@@ -132,6 +133,11 @@ pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
         })
         .collect();
 
+    if entries.len() > u16::MAX as usize {
+        return Err(Error::new(ErrorKind::InvalidInput, format!(
+            "Too many PNGs found in directory! Found {} PNGs, but cannot handle more than {}",
+            entries.len(), u16::MAX)))
+    }
     entries.sort();
     Ok(entries)
 }

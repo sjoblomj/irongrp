@@ -1,9 +1,10 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{log, UNCOMPRESSED_FILENAME, WAR1_FILENAME, Args, LogLevel};
+use crate::{log, Args, LogLevel, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use image::{ColorType, DynamicImage, ImageBuffer};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::ErrorKind;
 use std::sync::Mutex;
 
 type CacheKey = ([u8; 3], Option<u8>);
@@ -142,7 +143,7 @@ pub fn render_and_save_frames_to_png(
         let image = create_dynamic_image(args.use_transparency, canvas_width, canvas_height, buffer);
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
-        image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        image.save(&output_path).map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
 
     } else {
@@ -182,7 +183,7 @@ pub fn render_and_save_frames_to_png(
             };
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
-            image.save(&output_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            image.save(&output_path).map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
             log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
         }
 
@@ -348,7 +349,7 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
 
 pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<TrimmedImage> {
     let img = image::open(png_file_name)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
     let has_alpha = match img.color() {
         ColorType::Rgba8 | ColorType::La8 | ColorType::Rgba16 | ColorType::La16 => true,
         _ => false,
@@ -382,6 +383,19 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Resul
     let mut trimmed_pixels = Vec::with_capacity(new_width * new_height);
     for row in pixels_2d.iter().skip(trim_top).take(new_height) {
         trimmed_pixels.extend(&row[trim_left .. (trim_left + new_width)]);
+    }
+
+    if new_width > 2 * (u8::MAX as usize) || new_height > u8::MAX as usize {
+        return Err(std::io::Error::new(ErrorKind::InvalidInput, format!(
+            "Width ({}) is above limit of {}, or height ({}) is above limit of {}",
+            new_width, 2 * (u8::MAX as u16), new_height, u8::MAX,
+        )))
+    }
+    if trim_left > u8::MAX as usize || trim_top > u8::MAX as usize {
+        return Err(std::io::Error::new(ErrorKind::InvalidInput, format!(
+            "Too many transparent pixels. Trimmed away more on the left ({}) or on the top ({}) \
+            than the limit of {}", new_width, new_height, u8::MAX,
+        )))
     }
 
     Ok(TrimmedImage {
@@ -512,6 +526,57 @@ mod tests {
         let trimmed_image = png_to_pixels(path, &palette).unwrap();
 
         assert_eq!(trimmed_image.image_data.len(), 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn image_exactly_255x255() {
+        let palette = dummy_palette();
+        let path = "test_image_exactly_255x255.png";
+        let mut img = RgbaImage::new(255, 255);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba([100, 100, 100, 255]);
+        }
+        img.save(&path).unwrap();
+
+        let trimmed = png_to_pixels(&path, &palette).unwrap();
+        assert_eq!(trimmed.width  as usize + trimmed.x_offset as usize, 255);
+        assert_eq!(trimmed.height as usize + trimmed.y_offset as usize, 255);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn image_just_above_255x255() {
+        let palette = dummy_palette();
+        let path = "test_image_just_above_255x255.png";
+        let mut img = RgbaImage::new(256, 256);
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba([100, 100, 100, 255]);
+        }
+        img.save(&path).unwrap();
+
+        let result = png_to_pixels(&path, &palette);
+        assert!(result.is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn image_too_many_transparent_pixes() {
+        let palette = dummy_palette();
+        let path = "test_image_too_many_transparent_pixels.png";
+        let mut img = RgbaImage::new(300, 300);
+
+        // 260 pixels transparent on the top and left
+        for y in 0..3 {
+            for x in 0..3 {
+                let alpha = if x > 260 && y > 260 { 255 } else { 0 };
+                img.put_pixel(x, y, Rgba([100, 100, 100, alpha]));
+            }
+        }
+        img.save(&path).unwrap();
+
+        let result = png_to_pixels(&path, &palette);
+        assert!(result.is_err());
         fs::remove_file(path).unwrap();
     }
 }
