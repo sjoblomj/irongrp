@@ -416,7 +416,8 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
             let colour_index = line_data[data_offset]; // Colour index from palette
             data_offset += 1;
             log(LogLevel::Debug, &format!(
-                "Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). Pixel with palette index {} will be repeated {} times.",
+                "Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). \
+                Pixel with palette index {} will be repeated {} times.",
                 control_byte, colour_index, data_offset, data_offset, colour_index, run_length,
             ));
 
@@ -444,7 +445,8 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
             for _ in 0..copy_length {
                 if x >= image_width || data_offset >= line_data.len() {
                     log(LogLevel::Error, &format!(
-                        "Decoding error: X position ({}) is greater than image width ({}), or data offset ({}) is greater than line length ({}).",
+                        "Decoding error: X position ({}) is greater than image width ({}), \
+                        or data offset ({}) is greater than line length ({}).",
                         x, image_width, data_offset, line_data.len(),
                     ));
                     break;
@@ -1272,15 +1274,22 @@ mod tests {
 
     #[test]
     fn test_encode_then_decode_longer_roundtrip_with_differences_between_compression_types() {
-        let original = vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x16, 0x0C, 0x42, 0x77, 0x2C, 0x8A, 0x8A, 0x8A, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
+        let original =vec![
+            0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x16, 0x0C, 0x42, 0x77,
+            0x2C, 0x8A, 0x8A, 0x8A, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A,
+            0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
         let width = 44;
 
         let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
         let encoded_normal = encode_grp_rle_row(&decoded, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
+        let expected_optim = vec![
+            0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x4, 0x0C, 0x42, 0x77,
+            0x2C, 0x43, 0x8A, 0x0F, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A,
+            0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
         assert_eq!(encoded_normal, original);
-        assert_eq!(encoded_optim,  vec![0x81, 0x06, 0x0D, 0x43, 0x40, 0x8C, 0xA3, 0x09, 0x44, 0x08, 0x4, 0x0C, 0x42, 0x77, 0x2C, 0x43, 0x8A, 0x0F, 0x8B, 0x28, 0x28, 0x91, 0x43, 0x28, 0x8A, 0x40, 0x40, 0x8A, 0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81]);
+        assert_eq!(encoded_optim, expected_optim);
         assert_eq!(encoded_normal.len(), 43);
         assert_eq!(encoded_optim .len(), 43);
         assert_eq!(encoded_length, original.len());
@@ -1288,15 +1297,28 @@ mod tests {
 
     #[test]
     fn test_battlecruiser_frame8_row36() {
-        let original = vec![0x82, 0x3F, 0x8A, 0x8A, 0x40, 0x8A, 0x40, 0x8B, 0x8B, 0x8B, 0x40, 0x40, 0x8B, 0x8B, 0x40, 0x40, 0x8A, 0x8A, 0xA8, 0x0C, 0x0C, 0x09, 0x09, 0x08, 0x95, 0x95, 0x95, 0x7D, 0x7D, 0x97, 0x97, 0x45, 0x45, 0x45, 0x91, 0x91, 0x92, 0x9B, 0x2C, 0x8A, 0x8B, 0x40, 0x8B, 0x40, 0x8D, 0x92, 0x47, 0x91, 0x49, 0x49, 0x47, 0x40, 0x8B, 0x8B, 0x40, 0x42, 0x92, 0x49, 0x91, 0x91, 0x49, 0x49, 0x40, 0x40, 0x40, 0x15, 0x40, 0x45, 0x49, 0x47, 0x91, 0x91, 0x92, 0x43, 0x8A, 0x8A, 0x8A, 0x95, 0x51, 0x9A, 0x9A, 0x9A, 0x7D, 0x7D, 0x97, 0x95, 0x8A, 0x81];
+        let original = vec![
+            0x82, 0x3F, 0x8A, 0x8A, 0x40, 0x8A, 0x40, 0x8B, 0x8B, 0x8B, 0x40, 0x40, 0x8B, 0x8B,
+            0x40, 0x40, 0x8A, 0x8A, 0xA8, 0x0C, 0x0C, 0x09, 0x09, 0x08, 0x95, 0x95, 0x95, 0x7D,
+            0x7D, 0x97, 0x97, 0x45, 0x45, 0x45, 0x91, 0x91, 0x92, 0x9B, 0x2C, 0x8A, 0x8B, 0x40,
+            0x8B, 0x40, 0x8D, 0x92, 0x47, 0x91, 0x49, 0x49, 0x47, 0x40, 0x8B, 0x8B, 0x40, 0x42,
+            0x92, 0x49, 0x91, 0x91, 0x49, 0x49, 0x40, 0x40, 0x40, 0x15, 0x40, 0x45, 0x49, 0x47,
+            0x91, 0x91, 0x92, 0x43, 0x8A, 0x8A, 0x8A, 0x95, 0x51, 0x9A, 0x9A, 0x9A, 0x7D, 0x7D,
+            0x97, 0x95, 0x8A, 0x81];
         let width = 87;
 
         let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
         let encoded_normal = encode_grp_rle_row(&decoded, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
+        let expected_optim = vec![
+            130, 5, 138, 138, 64, 138, 64, 67, 139, 14, 64, 64, 139, 139, 64, 64, 138, 138,
+            168, 12, 12, 9, 9, 8, 67, 149, 4, 125, 125, 151, 151, 67, 69, 28, 145, 145, 146,
+            155, 44, 138, 139, 64, 139, 64, 141, 146, 71, 145, 73, 73, 71, 64, 139, 139, 64,
+            66, 146, 73, 145, 145, 73, 73, 68, 64, 7, 69, 73, 71, 145, 145, 146, 67, 67, 138,
+            2, 149, 81, 67, 154, 5, 125, 125, 151, 149, 138, 129];
         assert_eq!(encoded_normal, original);
-        assert_eq!(encoded_optim,  vec![130, 5, 138, 138, 64, 138, 64, 67, 139, 14, 64, 64, 139, 139, 64, 64, 138, 138, 168, 12, 12, 9, 9, 8, 67, 149, 4, 125, 125, 151, 151, 67, 69, 28, 145, 145, 146, 155, 44, 138, 139, 64, 139, 64, 141, 146, 71, 145, 73, 73, 71, 64, 139, 139, 64, 66, 146, 73, 145, 145, 73, 73, 68, 64, 7, 69, 73, 71, 145, 145, 146, 67, 67, 138, 2, 149, 81, 67, 154, 5, 125, 125, 151, 149, 138, 129]);
+        assert_eq!(encoded_optim, expected_optim);
         assert_eq!(encoded_normal.len(), 88);
         assert_eq!(encoded_optim .len(), 86);
         assert_eq!(encoded_length, original.len());
@@ -1398,7 +1420,11 @@ mod tests {
         create_test_png(&file2, [42, 42, 42], 16, 16);
         create_test_png(&file3, [71, 71, 71], 16, 16); // identical to file1
 
-        let result = files_to_grp(vec![file1.clone(), file2.clone(), file3.clone()], &palette, &CompressionType::Normal).unwrap();
+        let result = files_to_grp(
+            vec![file1.clone(), file2.clone(), file3.clone()],
+            &palette,
+            &CompressionType::Normal,
+        ).unwrap();
         let frames = result.0;
 
         assert_eq!(frames.len(), 3, "Should create three GrpFrames");
@@ -1428,7 +1454,11 @@ mod tests {
         create_test_png(&file_a, [10, 10, 10], 16, 16);
         create_test_png(&file_b, [11, 11, 11], 16, 16);
 
-        let result = files_to_grp(vec![file_a.clone(), file_b.clone()], &palette, &CompressionType::Normal).unwrap();
+        let result = files_to_grp(
+            vec![file_a.clone(), file_b.clone()],
+            &palette,
+            &CompressionType::Normal,
+        ).unwrap();
         let frames = result.0;
 
         assert_eq!(frames.len(), 2, "Should create two GrpFrames");
