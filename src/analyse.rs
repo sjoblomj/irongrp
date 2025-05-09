@@ -10,11 +10,12 @@ use std::io::{Read, Seek, SeekFrom};
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
 /// ranges, and file layout.
 pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
-    let mut file = File::open(&args.input_path)?;
+    let input_path = &args.input_path.clone().unwrap();
+    let mut file = File::open(input_path)?;
     let file_len = file.metadata()?.len();
 
     let (header, war1_style) = read_grp_header(&mut file)?;
-    let is_uncompressed = detect_uncompressed(&args.input_path, &header, war1_style)?;
+    let is_uncompressed = detect_uncompressed(input_path, &header, war1_style)?;
 
     let grp_type = if is_uncompressed && war1_style {
         GrpType::War1

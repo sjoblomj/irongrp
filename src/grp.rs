@@ -962,9 +962,10 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
     let pal_path = &args.pal_path.as_deref().unwrap();
     let palette  = read_palette(pal_path)?;
 
-    let mut f  = File::open(&args.input_path)?;
+    let input_path = &args.input_path.clone().unwrap();
+    let mut f  = File::open(input_path)?;
     let (header, war1_style) = read_grp_header(&mut f)?;
-    let is_uncompressed = detect_uncompressed(&args.input_path, &header, war1_style)?;
+    let is_uncompressed = detect_uncompressed(input_path, &header, war1_style)?;
 
     let grp_type = if is_uncompressed && war1_style {
         GrpType::War1
@@ -991,7 +992,7 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
     let pal_path  = &args.pal_path.as_deref().unwrap();
 
     let palette   = read_palette(pal_path)?;
-    let png_files = list_png_files(&args.input_path)?;
+    let png_files = list_png_files(&args.input_path.clone().unwrap())?;
     let compression_type = determine_compression_type(&png_files, &args.compression_type);
 
     let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &compression_type)?;

@@ -1,4 +1,5 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, ValueEnum, ValueHint};
+use clap_complete::Shell;
 use std::fmt;
 use std::fs;
 use std::io::{Error, ErrorKind};
@@ -14,21 +15,21 @@ pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Path to the GRP file, or directory containing PNG files
-    #[arg(long, short='i')]
-    pub input_path: String,
+    #[arg(long, short='i', value_hint = ValueHint::AnyPath)]
+    pub input_path: Option<String>,
 
     /// Path to the palette file.
-    #[arg(long, short='p')]
+    #[arg(long, short='p', value_hint = ValueHint::FilePath)]
     pub pal_path: Option<String>,
 
     /// Output directory if input is a GRP file,
     /// or output file if input is a directory
-    #[arg(long, short='o')]
+    #[arg(long, short='o', value_hint = ValueHint::AnyPath)]
     pub output_path: Option<String>,
 
     /// Mode of operation.
-    #[arg(long, short='m', required=true, value_enum, default_value_t = OperationMode::GrpToPng)]
-    pub mode: OperationMode,
+    #[arg(long, short='m', value_enum)]
+    pub mode: Option<OperationMode>,
 
     /// Compression type to use when creating GRP files.
     /// If omitted or set to 'auto', it will use 'normal'
@@ -66,6 +67,9 @@ pub struct Args {
     /// Logging level
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     pub log_level: LogLevel,
+
+    #[arg(long = "generate-shell-completions", value_enum, help = "Generate shell completions")]
+    pub generator: Option<Shell>,
 }
 
 #[derive(Clone, ValueEnum, PartialEq)]
