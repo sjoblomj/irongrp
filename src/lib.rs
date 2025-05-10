@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 pub mod analyse;
 pub mod grp;
 pub mod png;
+pub mod palpng;
 
 pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 

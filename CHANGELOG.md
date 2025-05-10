@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4] - 2025-05-10
+
+### Added
+- Support for Extended Uncompressed GRPs. This allows for Uncompressed GRPs to have frames with a width up to 512 pixels.
+- Support for WarCraft I Uncompressed GRPs.
+- Shell completion.
+- More tests.
+- Boundary checks for width, height, offsets and frame count.
+
+### Changed
+- When extracting PNGs from an Uncompressed GRP or WarCraft I style GRP, IronGRP will now name them "uncompressed_frame_xxx.png" or "war1_frame_xxx.png", respectively. When converting PNGs to GRP, if no CompressionType is given (or if CompressionType Auto is given), IronGRP will create an Uncompressed GRP if any of the input filenames contains "uncompressed", and create a WarCraft I style GRP if any of the input filenames contains "war1".
+- Renamed the values of the CompressionType to make more sense.
+- Some refactoring to make code more reusable.
+
+
 
 ## [0.3] - 2025-04-19
 

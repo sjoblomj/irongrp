@@ -1,4 +1,5 @@
-use crate::png::{png_to_pixels, render_and_save_frames_to_png, TrimmedImage};
+use crate::palpng::{read_rgb_palette, ImageWithMetadata};
+use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use std::collections::hash_map::DefaultHasher;
@@ -60,14 +61,6 @@ impl GrpFrame {
         let raw_data_size: usize = self.image_data.raw_row_data.iter().map(|row| row.len()).sum();
         row_offsets_size + raw_data_size
     }
-}
-
-/// Reads a PAL file (StarCraft palette format)
-fn read_palette(pal_path: &str) -> Result<Vec<[u8; 3]>> {
-    let mut file = File::open(pal_path)?;
-    let mut buffer = [0u8; 768]; // PAL files contain 256 RGB entries (256 * 3 bytes = 768)
-    file.read_exact(&mut buffer)?;
-    Ok(buffer.chunks(3).map(|c| [c[0], c[1], c[2]]).collect())
 }
 
 /// Parses the header of a GRP file. Returns the header and whether
@@ -748,7 +741,7 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame], compressi
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
 fn png_to_grpframe(
-    image: TrimmedImage,
+    image: ImageWithMetadata<u8, u16>,
     image_data_offset: u32,
     compression: &CompressionType,
 ) -> Result<GrpFrame> {
@@ -797,7 +790,7 @@ fn png_to_grpframe(
 /// Turn all the given PNG files into a set of GrpFrames.
 fn files_to_grp(
     png_files: Vec<String>,
-    palette: &[[u8; 3]],
+    palette: &Vec<[u8; 3]>,
     compression_type: &CompressionType,
 ) -> Result<(Vec<GrpFrame>, u16, u16)> {
 
@@ -889,7 +882,7 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: &Compre
 }
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not
-fn make_frame_reuse_key(compression_type: &CompressionType, image: &TrimmedImage) -> u64 {
+fn make_frame_reuse_key(compression_type: &CompressionType, image: &ImageWithMetadata<u8, u16>) -> u64 {
     if (*compression_type == CompressionType::Normal) || (*compression_type == CompressionType::Optimised) {
         // For normal GRPs, we reference a previous frame if the current image data
         // is identical to a frame we've already seen.
@@ -960,7 +953,7 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> Result<()> {
     let pal_path = &args.pal_path.as_deref().unwrap();
-    let palette  = read_palette(pal_path)?;
+    let palette  = read_rgb_palette(pal_path)?;
 
     let input_path = &args.input_path.clone().unwrap();
     let mut f  = File::open(input_path)?;
@@ -991,7 +984,7 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
     let out_path  = &args.output_path.as_deref().unwrap();
     let pal_path  = &args.pal_path.as_deref().unwrap();
 
-    let palette   = read_palette(pal_path)?;
+    let palette   = read_rgb_palette(pal_path)?;
     let png_files = list_png_files(&args.input_path.clone().unwrap())?;
     let compression_type = determine_compression_type(&png_files, &args.compression_type);
 
@@ -1016,14 +1009,14 @@ mod tests {
         img.save(path).expect("Failed to save test PNG");
     }
 
-    fn dummy_palette() -> [[u8; 3]; 256] {
+    fn dummy_palette() -> Vec<[u8; 3]> {
         let mut palette = [[0u8; 3]; 256];
         for (i, rgb) in palette.iter_mut().enumerate() {
             rgb[0] = i as u8;
             rgb[1] = i as u8;
             rgb[2] = i as u8;
         }
-        palette
+        Vec::from(palette)
     }
 
 
