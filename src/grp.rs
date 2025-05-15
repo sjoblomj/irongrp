@@ -1,4 +1,4 @@
-use crate::palpng::{read_rgb_palette, ImageWithMetadata};
+use crate::palpng::{read_rgb_palette, PalettizedImageWithMetadata};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
@@ -741,7 +741,7 @@ fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame], compressi
 
 /// Read the PNG in the given file name, and turn it into a GrpFrame
 fn png_to_grpframe(
-    image: ImageWithMetadata<u8, u16>,
+    image: PalettizedImageWithMetadata<u8, u16>,
     image_data_offset: u32,
     compression: &CompressionType,
 ) -> Result<GrpFrame> {
@@ -759,7 +759,7 @@ fn png_to_grpframe(
             return Err(Error::new(ErrorKind::InvalidInput, format!(
                 "Width ({}) is above limit of {}", image.width, u8::MAX)))
         }
-        encode_grp_rle_data(image.width, image.height, image.image_data, compression)
+        encode_grp_rle_data(image.width, image.height, image.palettized_image, compression)
 
     } else {
         let extended_width = image_should_be_extended(image.width);
@@ -774,7 +774,7 @@ fn png_to_grpframe(
             width  = w as u8;
         }
 
-        encode_uncompressed_grp(image.width, image.height, image.image_data, extended_width)
+        encode_uncompressed_grp(image.width, image.height, image.palettized_image, extended_width)
     };
 
     Ok(GrpFrame {
@@ -882,12 +882,12 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: &Compre
 }
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not
-fn make_frame_reuse_key(compression_type: &CompressionType, image: &ImageWithMetadata<u8, u16>) -> u64 {
+fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedImageWithMetadata<u8, u16>) -> u64 {
     if (*compression_type == CompressionType::Normal) || (*compression_type == CompressionType::Optimised) {
         // For normal GRPs, we reference a previous frame if the current image data
         // is identical to a frame we've already seen.
         let mut hasher = DefaultHasher::new();
-        image.image_data.hash(&mut hasher);
+        image.palettized_image.hash(&mut hasher);
         hasher.finish()
 
     } else {
@@ -895,7 +895,7 @@ fn make_frame_reuse_key(compression_type: &CompressionType, image: &ImageWithMet
         // current image data, and the metadata (x and y offsets, width, height)
         // is identical to a frame we've already seen.
         let key = FrameDedupKey {
-            image_data: image.image_data.clone(),
+            image_data: image.palettized_image.clone(),
             x_offset:   image.x_offset,
             y_offset:   image.y_offset,
             width:      image.width,

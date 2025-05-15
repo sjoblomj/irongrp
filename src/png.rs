@@ -1,5 +1,5 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::palpng::{draw_image_to_pixel_buffer, read_png, save_pixel_buffer_to_image_file, ImageWithMetadata};
+use crate::palpng::{draw_image_to_pixel_buffer, read_png, save_rgb_pixels_to_image_file, PalettizedImageWithMetadata};
 use crate::{log, Args, LogLevel, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -63,7 +63,7 @@ pub fn render_and_save_frames_to_png(
         }
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
-        save_pixel_buffer_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)?;
+        save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)?;
         log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
 
     } else {
@@ -102,7 +102,7 @@ pub fn render_and_save_frames_to_png(
             };
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
-            save_pixel_buffer_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)?;
+            save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)?;
             log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
         }
 
@@ -148,23 +148,23 @@ fn image_to_buffer(
         frame.width as u32
     };
 
-    let image = ImageWithMetadata {
+    let image = PalettizedImageWithMetadata {
         x_offset: frame.x_offset as u32,
         y_offset: frame.y_offset as u32,
         width,
         height:   frame.height as u32,
         original_width:  max_frame_width,
         original_height: max_frame_height,
-        image_data: frame.image_data.converted_pixels.clone(),
+        palettized_image: frame.image_data.converted_pixels.clone(),
     };
 
     let buffer = draw_image_to_pixel_buffer(image, &palette, use_transparency)?;
     Ok(buffer)
 }
 
-pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Result<ImageWithMetadata<u8, u16>> {
+pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Result<PalettizedImageWithMetadata<u8, u16>> {
     log(LogLevel::Debug, ""); // Give some space in the logs
-    let png: ImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true)?;
+    let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true)?;
 
     if png.width as u32 > 2 * (u8::MAX as u32) || png.height as u32 > u8::MAX as u32 {
         return Err(std::io::Error::new(ErrorKind::InvalidInput, format!(

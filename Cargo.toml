@@ -19,6 +19,8 @@ image = "0.25.6"      # For image manipulation (PNG handling)
 clap = { version = "4.5.37", features = ["derive"] }  # For CLI argument parsing
 clap_complete = "4.5.50"   # For generating shell completions
 once_cell = "1.21.3" # For caching in order to improve performance - not needed for functionality as such
+log = "0.4.27"
+simplelog = "0.12.2"
 
 [dev-dependencies]
 proptest = "1.6.0"

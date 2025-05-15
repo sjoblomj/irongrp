@@ -1,5 +1,5 @@
-use crate::{log, LogLevel};
 use image::{ColorType, DynamicImage, ImageBuffer};
+use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -10,19 +10,62 @@ use std::sync::Mutex;
 type CacheKey = ([u8; 3], Option<u8>);
 static COLOUR_INDEX_CACHE: Lazy<Mutex<HashMap<CacheKey, u8>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub struct ImageWithMetadata<O, S>
+pub struct PalettizedImageWithMetadata<O, S>
 where
     O: TryFrom<u32>, // Offset type
-    S: TryFrom<u32>, // Dimension type
+    S: TryFrom<u32>, // Image size type
 {
+    /// x-offset to where the image data starts
     pub x_offset: O,
+    /// y-offset to where the image data starts
     pub y_offset: O,
+    /// width  of the image data
     pub width:    S,
+    /// height of the image data
     pub height:   S,
+    /// original width  of the image, before any trimming or offsetting was done
     pub original_width:  S,
+    /// original height of the image, before any trimming or offsetting was done
     pub original_height: S,
-    pub image_data: Vec<u8>,
+    /// Palettized image, i.e. every element is an index to an external palette.
+    /// This is thus not an RGB pixel.
+    pub palettized_image: Vec<u8>,
 }
+
+/// Given a palettized image and a palette path, this function
+/// will create a PNG RGB image in the specified output_path.
+pub fn palettized_image_to_png<T>(
+    palettized_image: Vec<u8>,
+    pal_path: &str,
+    output_path: &str,
+    use_transparency: bool,
+    width:  T,
+    height: T,
+) -> Result<(), Error>
+where
+    T: Clone + TryFrom<u32> + TryInto<u32>, <T as TryInto<u32>>::Error: Debug,
+{
+    let image: PalettizedImageWithMetadata<u8, T> = PalettizedImageWithMetadata {
+        x_offset: 0,
+        y_offset: 0,
+        width:  width.clone(),
+        height: height.clone(),
+        original_width:  width.clone(),
+        original_height: height.clone(),
+        palettized_image,
+    };
+
+    let palette = read_rgb_palette(pal_path)?;
+    let rgb_pixels = draw_image_to_pixel_buffer(image, &palette, use_transparency)?;
+    save_rgb_pixels_to_image_file(
+        rgb_pixels,
+        output_path,
+        use_transparency,
+        width .try_into().unwrap(),
+        height.try_into().unwrap(),
+    )
+}
+
 
 /// Reads a Palette file
 pub fn read_rgb_palette(pal_path: &str) -> std::io::Result<Vec<[u8; 3]>> {
@@ -33,9 +76,9 @@ pub fn read_rgb_palette(pal_path: &str) -> std::io::Result<Vec<[u8; 3]>> {
     Ok(buffer.chunks(3).map(|c| [c[0], c[1], c[2]]).collect())
 }
 
-/// Saves the given pixel buffer to the given output path.
-pub fn save_pixel_buffer_to_image_file(
-    buffer: Vec<u8>,
+/// Saves the given RGB pixel buffer to the given output path.
+pub fn save_rgb_pixels_to_image_file(
+    rgb_pixels: Vec<u8>,
     output_path: &str,
     use_transparency: bool,
     width:  u32,
@@ -43,22 +86,22 @@ pub fn save_pixel_buffer_to_image_file(
 ) -> Result<(), Error> {
     let image = if use_transparency {
         DynamicImage::ImageRgba8(
-            ImageBuffer::from_raw(width, height, buffer)
+            ImageBuffer::from_raw(width, height, rgb_pixels)
                 .expect("Failed to create RGBA image"),
         )
     } else {
         DynamicImage::ImageRgb8(
-            ImageBuffer::from_raw(width, height, buffer)
+            ImageBuffer::from_raw(width, height, rgb_pixels)
                 .expect("Failed to create RGB image"),
         )
     };
     image.save(&output_path).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
 }
 
-/// Draws an image into a pixel buffer (Vec<u8>).
+/// Draws a palettized image into an RGB pixel buffer (Vec<u8>).
 /// Uses the given palette for colour lookups.
 pub fn draw_image_to_pixel_buffer<O, S>(
-    image: ImageWithMetadata<O, S>,
+    image: PalettizedImageWithMetadata<O, S>,
     palette: &Vec<[u8; 3]>,
     use_transparency: bool,
 ) -> std::io::Result<Vec<u8>>
@@ -78,7 +121,7 @@ where
     for y in 0..height {
         for x in 0..width {
             let idx = (y * width + x) as usize;
-            let palette_index = image.image_data[idx] as usize;
+            let palette_index = image.palettized_image[idx] as usize;
             let colour = palette[palette_index];
 
             let out_x = x + x_offset;
@@ -103,11 +146,15 @@ where
     Ok(buffer)
 }
 
+/// Reads a PNG file and creates an PalettizedImageWithMetadata by doing colour
+/// lookups using the given palette. If trim_transparent_pixels is set to true,
+/// any rows or columns where all pixels are transparent will be trimmed away,
+/// so that only the non-transparent parts of the image remains.
 pub fn read_png<O, S>(
     png_file_name: &str,
     palette: &Vec<[u8; 3]>,
     trim_transparent_pixels: bool,
-) -> std::io::Result<ImageWithMetadata<O, S>>
+) -> std::io::Result<PalettizedImageWithMetadata<O, S>>
 where
     O: TryFrom<u32>,
     S: TryFrom<u32>,
@@ -121,10 +168,10 @@ where
     let img_data = img.to_rgba8();
 
     let (width, height) = img_data.dimensions();
-    log(LogLevel::Info, &format!(
+    info!(
         "Reading image {}. Has alpha channel: {}. Dimensions: 0x{:0>2X} * 0x{:0>2X} ({} * {})",
         png_file_name, has_alpha, width, height, width, height,
-    ));
+    );
 
     let mut pixels_2d = vec![vec![0u8; width as usize]; height as usize];
     for (y, row) in img_data.rows().enumerate() {
@@ -151,14 +198,14 @@ where
         pixels.extend(&row[trim_left as usize .. (trim_left + new_width) as usize]);
     }
 
-    Ok(ImageWithMetadata {
+    Ok(PalettizedImageWithMetadata {
         x_offset: cast::<O>(trim_left,  "x_offset")?,
         y_offset: cast::<O>(trim_top,   "y_offset")?,
         width:    cast::<S>(new_width,  "width")?,
         height:   cast::<S>(new_height, "height")?,
         original_width:  cast::<S>(width,  "original_width")?,
         original_height: cast::<S>(height, "original_height")?,
-        image_data: pixels,
+        palettized_image: pixels,
     })
 }
 
@@ -188,10 +235,10 @@ fn map_colour_to_palette_index(colour: [u8; 3], alpha: Option<u8>, palette: &Vec
         return 0; // Transparent
     }
     if alpha != Some(255) && alpha != None {
-        log(LogLevel::Warn, &format!(
+        warn!(
             "Pixel [{}, {}, {}, {}] is neither fully transparent nor fully opaque. Will drop the alpha channel.",
             colour[0], colour[1], colour[2], alpha.unwrap(),
-        ));
+        );
     }
     let mut best_index = 0;
     let mut best_distance = u32::MAX;
@@ -209,10 +256,10 @@ fn map_colour_to_palette_index(colour: [u8; 3], alpha: Option<u8>, palette: &Vec
     }
 
     if best_distance != 0 {
-        log(LogLevel::Warn, &format!(
+        warn!(
             "Non-exact colour match for pixel [{}, {}, {}] — using palette index {} (distance = {})",
             colour[0], colour[1], colour[2], best_index, best_distance,
-        ));
+        );
     }
 
     best_index as u8
@@ -260,37 +307,37 @@ fn trim_away_transparency(pixels_2d: &Vec<Vec<u8>>, width: u32, height: u32) -> 
             break;
         }
     }
-    log(LogLevel::Debug, &format!(
+    debug!(
         "Trimming 0x{:0>2X} ({}) rows from top, 0x{:0>2X} ({}) from bottom, \
         0x{:0>2X} ({}) from left, 0x{:0>2X} ({}) from right",
         trim_top, trim_top, trim_bottom, trim_bottom, trim_left, trim_left, trim_right, trim_right,
-    ));
+    );
 
 
     // Clamp dimensions
     let new_width = if width > trim_left + trim_right {
         width - trim_left - trim_right
     } else {
-        log(LogLevel::Error, "Image is too small to trim. Setting width to 0");
+        error!("Image is too small to trim. Setting width to 0");
         0
     };
     let new_height = if height > trim_top + trim_bottom {
         height - trim_top - trim_bottom
     } else {
-        log(LogLevel::Error, "Image is too small to trim. Setting height to 0");
+        error!("Image is too small to trim. Setting height to 0");
         0
     };
 
-    log(LogLevel::Debug, &format!(
+    debug!(
         "width:  0x{:0>2X} ({}),  new_width: 0x{:0>2X} ({}), x_offset: 0x{:0>2X} ({})",
         width, width, new_width, new_width,
         (width - new_width) / 2, (width - new_width) / 2,
-    ));
-    log(LogLevel::Debug, &format!(
+    );
+    debug!(
         "height: 0x{:0>2X} ({}), new_height: 0x{:0>2X} ({}), y_offset: 0x{:0>2X} ({})",
         height, height, new_height, new_height,
         (height - new_height) / 2, (height - new_height) / 2,
-    ));
+    );
 
     (new_width, new_height, trim_left, trim_top)
 }
@@ -341,9 +388,9 @@ mod tests {
         let path_rgb = "test_rgb.png";
         save_test_png_rgb(path_rgb, [100, 100, 100], 8, 8);
 
-        let result_rgb: ImageWithMetadata<u8, u16> = read_png(path_rgb, &palette, true).unwrap();
-        for i in 0..result_rgb.image_data.len() {
-            assert_eq!(result_rgb.image_data[i], 100);
+        let result_rgb: PalettizedImageWithMetadata<u8, u16> = read_png(path_rgb, &palette, true).unwrap();
+        for i in 0..result_rgb.palettized_image.len() {
+            assert_eq!(result_rgb.palettized_image[i], 100);
         }
         fs::remove_file(path_rgb).unwrap();
 
@@ -351,9 +398,9 @@ mod tests {
         let path_rgba = "test_rgba.png";
         save_test_png_rgba(path_rgba, [100, 100, 100, 255], 8, 8);
 
-        let result_rgba: ImageWithMetadata<u8, u16> = read_png(path_rgba, &palette, true).unwrap();
-        for i in 0..result_rgba.image_data.len() {
-            assert_eq!(result_rgba.image_data[i], 100);
+        let result_rgba: PalettizedImageWithMetadata<u8, u16> = read_png(path_rgba, &palette, true).unwrap();
+        for i in 0..result_rgba.palettized_image.len() {
+            assert_eq!(result_rgba.palettized_image[i], 100);
         }
         fs::remove_file(path_rgba).unwrap();
     }
@@ -364,9 +411,9 @@ mod tests {
         let path_rgba = "test_rgba_alpha.png";
         save_test_png_rgba(path_rgba, [100, 100, 100, 71], 8, 8);
 
-        let trimmed_image: ImageWithMetadata<u8, u8> = read_png(path_rgba, &palette, true).unwrap();
-        for i in 0..trimmed_image.image_data.len() {
-            assert_eq!(trimmed_image.image_data[i], 100);
+        let trimmed_image: PalettizedImageWithMetadata<u8, u8> = read_png(path_rgba, &palette, true).unwrap();
+        for i in 0..trimmed_image.palettized_image.len() {
+            assert_eq!(trimmed_image.palettized_image[i], 100);
         }
         fs::remove_file(path_rgba).unwrap();
     }
@@ -386,7 +433,7 @@ mod tests {
         }
         img.save(path).unwrap();
 
-        let trimmed_image: ImageWithMetadata<u8, u8> = read_png(path, &palette, true).unwrap();
+        let trimmed_image: PalettizedImageWithMetadata<u8, u8> = read_png(path, &palette, true).unwrap();
         assert_eq!(trimmed_image.width,    1);
         assert_eq!(trimmed_image.height,   1);
         assert_eq!(trimmed_image.x_offset, 1);
@@ -401,9 +448,9 @@ mod tests {
         let path = "test_colour.png";
         save_test_png_rgb(path, [100, 100, 101], 1, 1);
 
-        let result: ImageWithMetadata<u8, u16> = read_png(path, &palette, false).unwrap();
+        let result: PalettizedImageWithMetadata<u8, u16> = read_png(path, &palette, false).unwrap();
 
-        assert_eq!(result.image_data[0], 100); // Closest match
+        assert_eq!(result.palettized_image[0], 100); // Closest match
         fs::remove_file(path).unwrap();
     }
 
@@ -413,9 +460,9 @@ mod tests {
         let path = "test_transparency.png";
         save_test_png_rgba(path, [0, 0, 0, 0], 1, 1); // Fully transparent
 
-        let trimmed_image: ImageWithMetadata<u8, u16> = read_png(path, &palette, true).unwrap();
+        let trimmed_image: PalettizedImageWithMetadata<u8, u16> = read_png(path, &palette, true).unwrap();
 
-        assert_eq!(trimmed_image.image_data.len(), 0);
+        assert_eq!(trimmed_image.palettized_image.len(), 0);
         fs::remove_file(path).unwrap();
     }
 
@@ -425,9 +472,9 @@ mod tests {
         let path = "test_transparency_without_trimming.png";
         save_test_png_rgba(path, [0, 0, 0, 0], 1, 1); // Fully transparent
 
-        let trimmed_image: ImageWithMetadata<u8, u16> = read_png(path, &palette, false).unwrap();
+        let trimmed_image: PalettizedImageWithMetadata<u8, u16> = read_png(path, &palette, false).unwrap();
 
-        assert_eq!(trimmed_image.image_data.len(), 1);
+        assert_eq!(trimmed_image.palettized_image.len(), 1);
         fs::remove_file(path).unwrap();
     }
 
@@ -441,7 +488,7 @@ mod tests {
         }
         img.save(&path).unwrap();
 
-        let result: ImageWithMetadata<u8, u8> = read_png(path, &palette, true).unwrap();
+        let result: PalettizedImageWithMetadata<u8, u8> = read_png(path, &palette, true).unwrap();
         assert_eq!(result.width  + result.x_offset, 255);
         assert_eq!(result.height + result.y_offset, 255);
         fs::remove_file(path).unwrap();
@@ -457,7 +504,7 @@ mod tests {
         }
         img.save(&path).unwrap();
 
-        let result: Result<ImageWithMetadata<u8, u8>, Error> = read_png(path, &palette, false);
+        let result: Result<PalettizedImageWithMetadata<u8, u8>, Error> = read_png(path, &palette, false);
         assert!(result.is_err());
         fs::remove_file(path).unwrap();
     }
@@ -477,7 +524,7 @@ mod tests {
         }
         img.save(&path).unwrap();
 
-        let result: Result<ImageWithMetadata<u8, u16>, Error> = read_png(path, &palette, true);
+        let result: Result<PalettizedImageWithMetadata<u8, u16>, Error> = read_png(path, &palette, true);
         assert!(result.is_err());
         fs::remove_file(path).unwrap();
     }
