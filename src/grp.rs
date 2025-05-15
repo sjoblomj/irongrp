@@ -116,14 +116,14 @@ fn determine_grp_style<R: Read + Seek>(
         // This is true for War1 GRPs and Extended GRPs
         let is_war1_style = try_reading_frame_headers(
             file,
-            frame_count as usize,
+            frame_count,
             get_header_size(true),
         ).is_ok();
         if is_war1_style {
             return Ok(is_war1_style)
         }
     }
-    let result = try_reading_frame_headers(file, frame_count as usize, get_header_size(false));
+    let result = try_reading_frame_headers(file, frame_count, get_header_size(false));
     if result.is_err() {
         return Err(result.err().unwrap());
     }
@@ -134,7 +134,7 @@ fn determine_grp_style<R: Read + Seek>(
 /// Returns Error if not.
 fn try_reading_frame_headers<R: Read + Seek>(
     file: &mut R,
-    frame_count: usize,
+    frame_count: u16,
     start_pos: usize,
 ) -> Result<()> {
 
@@ -191,7 +191,7 @@ fn adjust_width_and_offset_if_extended_when_encoding(width: u16, offset: u32) ->
 /// Parses all GRP frames
 pub fn read_grp_frames<R: Read + Seek>(
     file: &mut R,
-    frame_count: usize,
+    frame_count: u16,
     grp_type: GrpType,
 ) -> Result<Vec<GrpFrame>> {
 
@@ -228,16 +228,16 @@ pub fn read_grp_frames<R: Read + Seek>(
             };
             read_uncompressed_image_data(
                 file,
-                w as usize,
-                height as usize,
+                w,
+                height,
                 offset,
                 compression_type,
             )?
         } else {
             read_image_data(
                 file,
-                width  as usize,
-                height as usize,
+                width  as u16,
+                height as u16,
                 image_data_offset,
             )?
         };
@@ -268,8 +268,8 @@ pub fn read_grp_frames<R: Read + Seek>(
 /// Reads row offsets and decodes image data
 fn read_uncompressed_image_data<R: Read + Seek>(
     file:   &mut R,
-    width:  usize,
-    height: usize,
+    width:  u16,
+    height: u8,
     image_data_offset: u32,
     grp_type: GrpType,
 ) -> Result<ImageData> {
@@ -282,21 +282,16 @@ fn read_uncompressed_image_data<R: Read + Seek>(
         return Err(Error::new(
             ErrorKind::UnexpectedEof,
             format!("Wanted to read {} bytes, but only {} are available in file",
-                    width * height, data_len,
+                    width * height as u16, data_len,
             ),
         ));
     }
 
     file.seek(SeekFrom::Start(image_data_offset as u64))?;
-    let mut pixels = vec![0; width * height];
+    let mut pixels = vec![0; width as usize * height as usize];
     file.read_exact(&mut pixels)?;
 
-    let mut raw_row_data = Vec::with_capacity(height);
-    for row in 0..height {
-        let start = row * width;
-        let row_data = pixels[start..start + width].to_vec();
-        raw_row_data.push(row_data.clone());
-    }
+    let raw_row_data = read_uncompressed_pixels(width, height as u16, pixels.clone());
 
     Ok(ImageData {
         row_offsets: vec![],
@@ -306,11 +301,21 @@ fn read_uncompressed_image_data<R: Read + Seek>(
     })
 }
 
+fn read_uncompressed_pixels(width: u16, height: u16, pixels: Vec<u8>) -> Vec<Vec<u8>> {
+    let mut raw_row_data = Vec::with_capacity(height as usize);
+    for row in 0..height {
+        let start = row as usize * width as usize;
+        let row_data = pixels[start..start + width as usize].to_vec();
+        raw_row_data.push(row_data.clone());
+    }
+    raw_row_data
+}
+
 /// Reads row offsets and decodes image data
 fn read_image_data<R: Read + Seek>(
     file:   &mut R,
-    width:  usize,
-    height: usize,
+    width:  u16,
+    height: u16,
     image_data_offset: u32,
 ) -> Result<ImageData> {
 
@@ -325,9 +330,9 @@ fn read_image_data<R: Read + Seek>(
     file.read_exact(&mut data_block)?;
 
     // Parse row offsets from the beginning of data_block
-    let mut row_offsets = Vec::with_capacity(height);
+    let mut row_offsets = Vec::with_capacity(height as usize);
     for i in 0..height {
-        let offset_start = i * 2;
+        let offset_start = (i * 2) as usize;
         if  offset_start + 2 > data_block.len() {
             return Err(Error::new(
                 ErrorKind::UnexpectedEof,
@@ -338,8 +343,8 @@ fn read_image_data<R: Read + Seek>(
         row_offsets.push(row_offset);
     }
 
-    let mut raw_row_data = Vec::with_capacity(height);
-    let mut pixels = vec![0; width * height];
+    let mut raw_row_data = Vec::with_capacity(height as usize);
+    let mut pixels = vec![0; (width * height) as usize];
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
         if row_offset as usize >= data_block.len() {
@@ -367,7 +372,7 @@ fn read_image_data<R: Read + Seek>(
 
         raw_row_data.push(row_data[..encoded_length].to_vec());
 
-        let start = row * width;
+        let start = row * width as usize;
         pixels[start .. start + decoded_row.len()].copy_from_slice(&decoded_row);
     }
 
@@ -380,12 +385,12 @@ fn read_image_data<R: Read + Seek>(
 }
 
 /// Decodes an RLE-compressed row of pixels
-fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) {
-    let mut line_pixels = vec![0; image_width]; // Initialize with transparent pixels (palette index 0)
+fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
+    let mut line_pixels = vec![0; image_width as usize]; // Initialize with transparent pixels (palette index 0)
     let mut x = 0; // Position in output row
     let mut data_offset = 0; // Position in input data
 
-    while x < image_width && data_offset < line_data.len() {
+    while x < image_width as usize && data_offset < line_data.len() {
         let control_byte = line_data[data_offset];
         data_offset += 1;
 
@@ -415,7 +420,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
             ));
 
             for _ in 0..run_length {
-                if x >= image_width {
+                if x >= image_width as usize {
                     log(LogLevel::Error, &format!(
                         "Decoding error: X position ({}) is greater than image width ({}).",
                         x, image_width,
@@ -436,7 +441,7 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: usize) -> (Vec<u8>, usize) 
             let mut bytes_for_logging = "".to_string();
 
             for _ in 0..copy_length {
-                if x >= image_width || data_offset >= line_data.len() {
+                if x >= image_width as usize || data_offset >= line_data.len() {
                     log(LogLevel::Error, &format!(
                         "Decoding error: X position ({}) is greater than image width ({}), \
                         or data offset ({}) is greater than line length ({}).",
@@ -658,12 +663,7 @@ fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_typ
 /// Encodes pixels to an uncompressed ImageData
 fn encode_uncompressed_grp(width: u16, height: u16, pixels: Vec<u8>, extended_width: bool) -> ImageData {
 
-    let mut raw_row_data = Vec::with_capacity(height as usize);
-    for row in 0..height {
-        let start = row as usize * width as usize;
-        let row_data = pixels[start..start + width as usize].to_vec();
-        raw_row_data.push(row_data.clone());
-    }
+    let raw_row_data = read_uncompressed_pixels(width, height, pixels.clone());
 
     // In uncompressed GRPs, there is no list of row offsets in each frame, unlike in normal GRPs.
     // By setting row_offsets to an empty array, we can avoid it being written later.
@@ -968,7 +968,7 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
         GrpType::Normal
     };
 
-    let frames = read_grp_frames(&mut f, header.frame_count as usize, grp_type)?;
+    let frames = read_grp_frames(&mut f, header.frame_count, grp_type)?;
 
     render_and_save_frames_to_png(
         &frames,
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn test_encode_then_decode_roundtrip() {
         let original = vec![0, 0, 7, 7, 7, 8, 9];
-        let width = original.len();
+        let width = original.len() as u16;
 
         let encoded_normal = encode_grp_rle_row(&original, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&original, &CompressionType::Optimised);
@@ -1469,8 +1469,8 @@ mod tests {
         for row in test_cases {
             let encoded_normal = encode_grp_rle_row(&row, &CompressionType::Normal);
             let encoded_optim  = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let (decoded_normal, encoded_normal_length) = decode_grp_rle_row(&encoded_normal, row.len());
-            let (decoded_optim , encoded_optim_length)  = decode_grp_rle_row(&encoded_optim, row.len());
+            let (decoded_normal, encoded_normal_length) = decode_grp_rle_row(&encoded_normal, row.len() as u16);
+            let (decoded_optim , encoded_optim_length)  = decode_grp_rle_row(&encoded_optim,  row.len() as u16);
 
             assert_eq!(decoded_normal, row);
             assert_eq!(decoded_optim,  row);
@@ -1492,7 +1492,7 @@ mod tests {
         fn prop_encode_decode_roundtrip(row in proptest::collection::vec(0u8..=255, 0..128)) {
             let width = row.len();
             let encoded = encode_grp_rle_row(&row, &CompressionType::Normal);
-            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width);
+            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width as u16);
             prop_assert_eq!(decoded, row);
             prop_assert_eq!(encoded_length, encoded.len());
         }

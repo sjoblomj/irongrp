@@ -24,7 +24,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     } else {
         GrpType::Normal
     };
-    let frames = read_grp_frames(&mut file, header.frame_count as usize, grp_type)?;
+    let frames = read_grp_frames(&mut file, header.frame_count, grp_type)?;
 
     println!();
     log(LogLevel::Info, &format!("GRP type: {:?}", grp_type));
