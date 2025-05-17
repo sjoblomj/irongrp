@@ -1,7 +1,7 @@
-use crate::palpng::{read_rgb_palette, PalettizedImageWithMetadata};
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
+use palpngrs::{read_rgb_palette, PalettizedImageWithMetadata};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;

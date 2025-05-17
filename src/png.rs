@@ -1,6 +1,6 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::palpng::{draw_image_to_pixel_buffer, read_png, save_rgb_pixels_to_image_file, PalettizedImageWithMetadata};
 use crate::{log, Args, LogLevel, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use palpngrs::{draw_image_to_pixel_buffer, read_png, save_rgb_pixels_to_image_file, PalettizedImageWithMetadata};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;

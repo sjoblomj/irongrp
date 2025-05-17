@@ -513,7 +513,7 @@ dependencies = [
  "clap_complete",
  "image",
  "log",
- "once_cell",
+ "palpngrs",
  "proptest",
  "simplelog",
 ]
@@ -727,6 +727,17 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+
+[[package]]
+name = "palpngrs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00926a782906f26154503c320027f8da746fe0803e64b11e0ceffb03edf5cf28"
+dependencies = [
+ "image",
+ "log",
+ "once_cell",
+]
 
 [[package]]
 name = "paste"
