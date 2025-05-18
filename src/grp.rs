@@ -1,6 +1,7 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
-use crate::{list_png_files, log, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{list_png_files, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
+use log::{debug, error, info, trace, warn};
 use palpngrs::{read_rgb_palette, PalettizedImageWithMetadata};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -96,10 +97,10 @@ pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)
         }
     };
 
-    log(LogLevel::Debug, &format!(
+    debug!(
         "Read GRP Header. War1 style: {}, Frame count: {}, max width: {}, max_height: {}",
         war1_style, header.frame_count, header.max_width, header.max_height,
-    ));
+    );
     Ok((header, war1_style))
 }
 
@@ -198,7 +199,7 @@ pub fn read_grp_frames<R: Read + Seek>(
     let pos = get_header_size(grp_type ==  GrpType::War1) as u64;
     let mut frames = Vec::new();
     for i in 0..frame_count {
-        log(LogLevel::Debug, &format!("Reading GRP Frame {} / {}", i, frame_count));
+        debug!("Reading GRP Frame {} / {}", i, frame_count);
         file.seek(SeekFrom::Start(pos + (i * 8) as u64))?;
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
@@ -212,11 +213,11 @@ pub fn read_grp_frames<R: Read + Seek>(
             let (w, offset) = adjust_width_and_offset_if_extended_when_decoding(width, image_data_offset);
             let has_extended_size = offset_is_extended(image_data_offset);
             if  has_extended_size {
-                log(LogLevel::Debug, &format!(
+                debug!(
                     "Reading Uncompressed frame {} with extended size. Width in file: {}, \
                     actual width: {}. Offset in file: 0x{:0>2X}, actual offset: 0x{:0>2X}",
                     i, width, w, image_data_offset, offset,
-                ));
+                );
             }
 
             let compression_type = if has_extended_size {
@@ -251,7 +252,7 @@ pub fn read_grp_frames<R: Read + Seek>(
             image_data,
         };
         frames.push(grp_frame.clone());
-        log(LogLevel::Debug, &format!(
+        debug!(
             "Read GRP Frame {}. x-offset: 0x{:0>2X} ({}), y-offset: 0x{:0>2X} ({}), \
             width: 0x{:0>2X} ({}), height: 0x{:0>2X} ({}), image-data-offset: 0x{:0>4X} ({}), \
             number of pixels: {}",
@@ -259,8 +260,8 @@ pub fn read_grp_frames<R: Read + Seek>(
             grp_frame.width, grp_frame.width, grp_frame.height, grp_frame.height,
             grp_frame.image_data_offset, grp_frame.image_data_offset,
             grp_frame.image_data.converted_pixels.len(),
-        ));
-        log(LogLevel::Debug, ""); // Give some space in the logs
+        );
+        debug!(""); // Give some space in the logs
     }
     Ok(frames)
 }
@@ -354,10 +355,10 @@ fn read_image_data<R: Read + Seek>(
             ));
         }
         let row_data = &data_block[row_offset as usize ..];
-        log(LogLevel::Debug, &format!(
+        debug!(
             "Decoding row {} of width {} from offset {} (length {})",
             row, width, row_offset, row_data.len(),
-        ));
+        );
 
         let (decoded_row, encoded_length) = decode_grp_rle_row(row_data, width);
 
@@ -397,34 +398,34 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
         if control_byte & 0x80 != 0 { // Transparent - skip x pixels
             let skip = (control_byte & 0x7F) as usize;
             x += skip;
-            log(LogLevel::Debug, &format!(
+            trace!(
                 "Decoding transparent byte (0x{:0>2X}). Skipping 0x{:0>2X} ({}) pixels.",
                 control_byte, skip, skip,
-            ));
+            );
 
         } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same colour X times)
             let run_length  = (control_byte & 0x3F) as usize;
             if data_offset >= line_data.len() { // Safety check
-                log(LogLevel::Error, &format!(
+                error!(
                     "Decoding error: Requested offset ({}) is greater than line length ({}).",
                     data_offset, line_data.len(),
-                ));
+                );
                 break;
             }
             let colour_index = line_data[data_offset]; // Colour index from palette
             data_offset += 1;
-            log(LogLevel::Debug, &format!(
+            trace!(
                 "Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). \
                 Pixel with palette index {} will be repeated {} times.",
                 control_byte, colour_index, data_offset, data_offset, colour_index, run_length,
-            ));
+            );
 
             for _ in 0..run_length {
                 if x >= image_width as usize {
-                    log(LogLevel::Error, &format!(
+                    error!(
                         "Decoding error: X position ({}) is greater than image width ({}).",
                         x, image_width,
-                    ));
+                    );
                     break;
                 }
                 line_pixels[x] = colour_index;
@@ -434,19 +435,19 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
         } else { // Normal - copy x pixels directly
             let copy_length = control_byte as usize;
 
-            log(LogLevel::Debug, &format!(
+            trace!(
                 "Normal decoding (0x{:0>2X}). Will copy {} pixels.",
                 control_byte, copy_length,
-            ));
+            );
             let mut bytes_for_logging = "".to_string();
 
             for _ in 0..copy_length {
                 if x >= image_width as usize || data_offset >= line_data.len() {
-                    log(LogLevel::Error, &format!(
+                    error!(
                         "Decoding error: X position ({}) is greater than image width ({}), \
                         or data offset ({}) is greater than line length ({}).",
                         x, image_width, data_offset, line_data.len(),
-                    ));
+                    );
                     break;
                 }
                 line_pixels[x] = line_data[data_offset];
@@ -456,12 +457,12 @@ fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
             }
             if copy_length == 0 {
                 data_offset += 1;
-                log(LogLevel::Error, "Read instruction to copy 0 pixels - Stepping over");
+                error!("Read instruction to copy 0 pixels - Stepping over");
             } else {
-                log(LogLevel::Debug, &format!(
+                trace!(
                     "Normal decoding of {} bytes: {}",
                     copy_length, bytes_for_logging,
-                ));
+                );
             }
         }
     }
@@ -476,12 +477,12 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     let mut i = 0;
 
     if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
-        log(LogLevel::Debug, &format!("Beginning to encode using compression type '{}'", compression_type));
+        debug!("Beginning to encode using compression type '{}'", compression_type);
         for x in 0..row_pixels.len() {
-            log(LogLevel::Debug, &format!(
+            trace!(
                 "x: {:2}, row_pixels[i]: {:2X} ({:3})",
                 x, row_pixels[x], row_pixels[x],
-            ));
+            );
         }
     }
 
@@ -495,25 +496,25 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     while i < row_pixels.len() {
         safety_break += 1;
         if safety_break > 4096 {
-            log(LogLevel::Error, "Seems like we're stuck in an infinite encoding loop, after 4096 iterations. Breaking.");
+            error!("Seems like we're stuck in an infinite encoding loop, after 4096 iterations. Breaking.");
             break;
         }
         let current_colour = row_pixels[i];
 
-        log(LogLevel::Debug, &format!(
+        trace!(
             "Encoding pixel at position {} / {} with palette index {}",
             i, row_pixels.len(), current_colour,
-        ));
+        );
         // Case 1: Transparent run (index 0)
         if current_colour == 0 {
             let mut run_len = 1;
             while i + run_len < row_pixels.len() && row_pixels[i + run_len] == 0 && run_len < 127 {
                 run_len += 1;
             }
-            log(LogLevel::Debug, &format!(
+            trace!(
                 "Encoding transparent run of 0x{:0>2X} ({}) => 0x{:0>2X} ({})",
                 run_len, run_len, 0x80 | run_len as u8, 0x80 | run_len as u8,
-            ));
+            );
             encoded.push(0x80 | run_len as u8);
             i += run_len;
 
@@ -525,16 +526,13 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
             {
                 run_len += 1;
             }
-            log(LogLevel::Debug, &format!(
-                "Encoding: Pixels of the same colour: 0x{:0>2X} ({})",
-                run_len, run_len,
-            ));
+            trace!("Encoding: Pixels of the same colour: 0x{:0>2X} ({})", run_len, run_len);
 
             if run_len > same_colour_threshold {
-                log(LogLevel::Debug, &format!(
+                trace!(
                     "Encoding same colour 0x{:0>2X} ({}) => 0x{:0>2X} 0x{:0>2X}",
                     run_len, run_len, 0x40 | run_len as u8, current_colour,
-                ));
+                );
                 encoded.push(0x40 | run_len as u8);
                 encoded.push(current_colour);
                 i += run_len;
@@ -547,10 +545,10 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
 
                 // Go through the row until we find a run of same coloured pixels above the threshold
                 for x in i..row_pixels.len() {
-                    log(LogLevel::Debug, &format!(
+                    trace!(
                         "Encoding literal copy. x: {:2}, row_pixels[i]: {:2X} ({:3})",
                         x, row_pixels[x], row_pixels[x],
-                    ));
+                    );
                     if row_pixels[x] == 0 {
                         break;
                     }
@@ -585,10 +583,10 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                     run_len += 1;
                 }
 
-                log(LogLevel::Debug, &format!(
+                trace!(
                     "Encoding literal copy of 0x{:0>2X} ({}) => 0x{:0>2X} ({})",
                     run_len, run_len, run_len, run_len,
-                ));
+                );
                 encoded.push(run_len as u8);
                 encoded.extend_from_slice(&row_pixels[start..start + run_len]);
                 i += run_len;
@@ -624,12 +622,13 @@ fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_typ
         let end = start + width as usize;
         let row_pixels = &pixels[start..end];
 
-        log(LogLevel::Debug, ""); // Give some space in the logs
-        log(LogLevel::Debug, &format!(
+        trace!(""); // Give some space in the logs
+        trace!(
             "Encoding row {} / {} of width {}. Start: {}, End: {}",
             row, height, width, start, end,
-        ));
+        );
         let encoded_row = encode_grp_rle_row(row_pixels, compression_type);
+
         rle_data.extend_from_slice(&encoded_row);
         raw_row_data.push(encoded_row.clone());
 
@@ -765,11 +764,11 @@ fn png_to_grpframe(
         let extended_width = image_should_be_extended(image.width);
         if  extended_width {
             let (w, o) = adjust_width_and_offset_if_extended_when_encoding(image.width, offset);
-            log(LogLevel::Debug, &format!(
+            debug!(
                 "Writing Uncompressed frame with extended size. Actual width: {}, width in file: {}. \
                     Actual offset: 0x{:0>2X}, offset in file: 0x{:0>2X}",
                 image.width, w, image_data_offset, o,
-            ));
+            );
             offset = o;
             width  = w as u8;
         }
@@ -808,10 +807,7 @@ fn files_to_grp(
 
         if let Some(&existing_index) = seen_frames.get(&reuse_key) {
             let reused: GrpFrame = grp_frames[existing_index].clone();
-            log(LogLevel::Info, &format!(
-                "Frame {} is identical to frame {} — reusing image data",
-                index, existing_index,
-            ));
+            info!("Frame {} is identical to frame {} — reusing image data", index, existing_index);
 
             grp_frames.push(GrpFrame {
                 x_offset: image.x_offset,
@@ -877,7 +873,7 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: &Compre
             CompressionType::Normal
         }
     };
-    log(LogLevel::Debug, &format!("Will use compression type {}", compression));
+    debug!("Will use compression type {}", compression);
     compression
 }
 
@@ -940,12 +936,12 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
     }
 
     let is_uncompressed = first_offset + total_frame_size == file_len as u32;
-    let log_level = if is_uncompressed {
-        LogLevel::Warn
+    let msg = format!("Is uncompressed: {}. Is WarCraft I style: {}", is_uncompressed, war1_style);
+    if is_uncompressed {
+        warn!("{}", msg);
     } else {
-        LogLevel::Debug
+        debug!("{}", msg);
     };
-    log(log_level, &format!("Is uncompressed: {}. Is WarCraft I style: {}", is_uncompressed, war1_style));
 
     Ok(is_uncompressed)
 }

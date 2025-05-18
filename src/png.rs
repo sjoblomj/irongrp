@@ -1,5 +1,6 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{log, Args, LogLevel, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use log::{debug, info};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_rgb_pixels_to_image_file, PalettizedImageWithMetadata};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -20,23 +21,24 @@ pub fn render_and_save_frames_to_png(
         // So, if there are 25 frames, but the user has requested a max_width that only fits
         // 3 frames, then the resulting image would be 3x9
         let mut cols = (frames.len() as f64).sqrt().floor() as u32;
-        log(LogLevel::Debug, &format!(
+        debug!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
             cols, max_frame_width, max_frame_height, args.max_width.unwrap_or(0),
-        ));
+        );
 
         // The user has requested a maximum width in pixels,
         // so we might need to adjust the number of columns down.
         if let Some(max_w) = args.max_width {
             if max_w > max_frame_width && cols * max_frame_width > max_w {
                 cols = (max_w as f64 / max_frame_width as f64).floor() as u32;
-                log(LogLevel::Debug, &format!("Adjusted number of columns to: {}", cols));
+                debug!("Adjusted number of columns to: {}", cols);
             } else if max_w < max_frame_width {
                 cols = 1;
-                log(LogLevel::Debug, &format!(
+                debug!(
                     "The requested max-width, {}, is smaller than one frame. The resulting image \
                     will have 1 column and it will be {} pixels wide.",
-                    max_w, max_frame_width));
+                    max_w, max_frame_width
+                );
             }
         }
 
@@ -64,7 +66,7 @@ pub fn render_and_save_frames_to_png(
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
         save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)?;
-        log(LogLevel::Info, &format!("Saved all frames to {}", output_path));
+        info!("Saved all frames to {}", output_path);
 
     } else {
         // Non-tiled mode - save each frame as a separate image.
@@ -103,7 +105,7 @@ pub fn render_and_save_frames_to_png(
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
             save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)?;
-            log(LogLevel::Info, &format!("Saved frame {:2} to {}", i, output_path));
+            info!("Saved frame {:2} to {}", i, output_path);
         }
 
         let mut offset_duplicates_vec: Vec<(&u32, &Vec<usize>)> = offset_map
@@ -115,7 +117,7 @@ pub fn render_and_save_frames_to_png(
 
         let mut offset_duplicates: HashSet<usize> = HashSet::new();
         for (_, indices) in offset_duplicates_vec {
-            log(LogLevel::Info, &format!("Identical frames: {:?}", indices));
+            info!("Identical frames: {:?}", indices);
             offset_duplicates.extend(indices);
         }
 
@@ -123,9 +125,9 @@ pub fn render_and_save_frames_to_png(
             if indices.len() > 1 {
                 let overlap = indices.iter().any(|idx| offset_duplicates.contains(idx));
                 if !overlap {
-                    log(LogLevel::Info, &format!(
+                    info!(
                         "Identical frames with duplicated image data in GRP: {:?}", indices,
-                    ));
+                    );
                 }
             }
         }
@@ -163,7 +165,7 @@ fn image_to_buffer(
 }
 
 pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Result<PalettizedImageWithMetadata<u8, u16>> {
-    log(LogLevel::Debug, ""); // Give some space in the logs
+    debug!(""); // Give some space in the logs
     let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true)?;
 
     if png.width as u32 > 2 * (u8::MAX as u32) || png.height as u32 > u8::MAX as u32 {

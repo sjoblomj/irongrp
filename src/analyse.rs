@@ -1,11 +1,11 @@
 use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{log, Args, LogLevel, LOG_LEVEL};
+use crate::{Args, LogLevel, LOG_LEVEL};
+use log::{debug, error, info, warn};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
-
 
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
 /// ranges, and file layout.
@@ -27,15 +27,12 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     let frames = read_grp_frames(&mut file, header.frame_count, grp_type)?;
 
     println!();
-    log(LogLevel::Info, &format!("GRP type: {:?}", grp_type));
+    info!("GRP type: {:?}", grp_type);
 
     if args.frame_number.is_some() {
         let frame_number = args.frame_number.unwrap() as usize;
         if  frame_number > frames.len() {
-            log(LogLevel::Error, &format!(
-                "Frame number {} is out of range (0-{})",
-                frame_number, frames.len() - 1,
-            ));
+            error!("Frame number {} is out of range (0-{})", frame_number, frames.len() - 1);
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
         let row_number = if args.analyse_row_number.is_none() || is_uncompressed {
@@ -44,10 +41,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
             args.analyse_row_number.unwrap()
         };
         if row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
-            log(LogLevel::Error, &format!(
-                "Row number {} is out of range (0-{})",
-                row_number, frames[frame_number].height,
-            ));
+            error!("Row number {} is out of range (0-{})", row_number, frames[frame_number].height);
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
         }
 
@@ -61,21 +55,21 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         } else {
             file_len as u32
         };
-        log(LogLevel::Info, &format!("Analyzing frame {}:", frame_number));
-        log(LogLevel::Info, &format!("- GrpType:  {:?}", frames[frame_number].image_data.grp_type));
-        log(LogLevel::Info, &format!("- X offset: {}", frames[frame_number].x_offset));
-        log(LogLevel::Info, &format!("- Y offset: {}", frames[frame_number].y_offset));
-        log(LogLevel::Info, &format!("- Width:    {}", width));
-        log(LogLevel::Info, &format!("- Height:   {}", frames[frame_number].height));
-        log(LogLevel::Info, &format!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset));
-        log(LogLevel::Info, &format!("- Next frames image data offset: 0x{:0>2X}", next_offset));
+        info!("Analyzing frame {}:", frame_number);
+        info!("- GrpType:  {:?}", frames[frame_number].image_data.grp_type);
+        info!("- X offset: {}", frames[frame_number].x_offset);
+        info!("- Y offset: {}", frames[frame_number].y_offset);
+        info!("- Width:    {}", width);
+        info!("- Height:   {}", frames[frame_number].height);
+        info!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset);
+        info!("- Next frames image data offset: 0x{:0>2X}", next_offset);
         if frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
-                log(LogLevel::Info, &format!(
+                info!(
                     "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
                     i, i, frames[frame_number].image_data.row_offsets[i],
                     frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16,
-                ));
+                );
             }
         }
         if args.analyse_row_number.is_some() && frames[frame_number].image_data.grp_type == GrpType::Normal {
@@ -83,10 +77,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                 if row_number == i as u8 {
                     let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
                     println!();
-                    log(LogLevel::Info, &format!(
+                    info!(
                         "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
                         i, i, frames[frame_number].image_data.row_offsets[i], start,
-                    ));
+                    );
 
                     let mut bytes = "".to_string();
                     let mut buf = vec![0u8; row.len()];
@@ -95,7 +89,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                     for b in &buf {
                         bytes.push_str(&format!("{:02X} ", b));
                     }
-                    log(LogLevel::Info, &format!("  Data ({} bytes): {}", row.len(), &bytes));
+                    info!("  Data ({} bytes): {}", row.len(), &bytes);
                     break;
                 }
             }
@@ -104,10 +98,10 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         return Ok(());
     }
     println!();
-    log(LogLevel::Info, "GRP Header:");
-    log(LogLevel::Info, &format!("- Frame count: {}", header.frame_count));
-    log(LogLevel::Info, &format!("- Max width:   {}", header.max_width));
-    log(LogLevel::Info, &format!("- Max height:  {}", header.max_height));
+    info!("GRP Header:");
+    info!("- Frame count: {}", header.frame_count);
+    info!("- Max width:   {}", header.max_width);
+    info!("- Max height:  {}", header.max_height);
 
     let mut actual_max_width  = 0;
     let mut actual_max_height = 0;
@@ -125,11 +119,11 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     }
 
     if actual_max_width > header.max_width || actual_max_height > header.max_height {
-        log(LogLevel::Warn, "⚠ Header max dimensions are less than the actual frame extents!");
-        log(LogLevel::Warn, &format!("- Actual max width:  {}", actual_max_width));
-        log(LogLevel::Warn, &format!("- Actual max height: {}", actual_max_height));
+        warn!("⚠ Header max dimensions are less than the actual frame extents!");
+        warn!("- Actual max width:  {}", actual_max_width);
+        warn!("- Actual max height: {}", actual_max_height);
     } else {
-        log(LogLevel::Info, "✔ Header dimensions correctly describe frame bounds");
+        info!("✔ Header dimensions correctly describe frame bounds");
     }
     println!();
 
@@ -175,11 +169,11 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     for (_, indices) in hash_map {
         if indices.len() > 1 {
             duplicates_found = true;
-            log(LogLevel::Warn, &format!("⚠ Identical image data found in frames: {:?}", indices));
+            warn!("⚠ Identical image data found in frames: {:?}", indices);
         }
     }
     if !duplicates_found {
-        log(LogLevel::Info, "✔ All frames have unique pixel data");
+        info!("✔ All frames have unique pixel data");
     }
     used_ranges.sort_by_key(|r| r.0);
     println!();
@@ -193,18 +187,18 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         let (curr_start, curr_end, curr_label) = &used_ranges[i];
         if curr_start < prev_end {
             if !has_printed_header {
-                log(LogLevel::Debug, "⚠ Overlapping ranges detected:");
+                debug!("⚠ Overlapping ranges detected:");
                 has_printed_header = true;
             }
-            log(LogLevel::Debug, &format!(
+            debug!(
                 "[0x{:0>2X}]-[0x{:0>2X}] ({}) overlaps with [0x{:0>2X}]-[0x{:0>2X}] ({})",
                 prev_start, prev_end, prev_label, curr_start, curr_end, curr_label,
-            ));
+            );
             overlap_found = true;
         }
     }
     if !overlap_found {
-        log(LogLevel::Info, "✔ No overlapping ranges detected");
+        info!("✔ No overlapping ranges detected");
     }
     println!();
 
@@ -216,13 +210,13 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
         if pos < *start {
             any_gaps = true;
             if !has_printed_header {
-                log(LogLevel::Warn, "⚠ Unused data found between GRP sections:");
+                warn!("⚠ Unused data found between GRP sections:");
                 has_printed_header = true;
             }
-            log(LogLevel::Warn, &format!(
+            warn!(
                 "- Gap from [0x{:0>6X}] to [0x{:0>6X}] ({} bytes)",
                 pos, start, start - pos,
-            ));
+            );
 
             let mut bytes = "".to_string();
             let mut buf = vec![0u8; (start - pos) as usize];
@@ -231,28 +225,28 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
             for b in &buf {
                 bytes.push_str(&format!("{:02X} ", b));
             }
-            log(LogLevel::Warn, &format!("  Data: {}", &bytes));
+            warn!("  Data: {}", &bytes);
         }
         pos = *end;
     }
     if pos < file_len {
         any_gaps = true;
         if !has_printed_header {
-            log(LogLevel::Warn, "⚠ Unused data found between GRP sections:");
+            warn!("⚠ Unused data found between GRP sections:");
         }
-        log(LogLevel::Warn, &format!(
+        warn!(
             "- Trailing data from 0x{:0>6X} to end ({} bytes)",
             pos, file_len - pos,
-        ));
+        );
     }
     if !any_gaps {
-        log(LogLevel::Info, "✔ No unused data found between GRP sections");
+        info!("✔ No unused data found between GRP sections");
     }
     println!();
 
 
     if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
-        log(LogLevel::Debug, "File layout diagram:");
+        debug!("File layout diagram:");
         let mut pos = 0;
         for (start, end, label) in used_ranges {
             if pos < start {
@@ -266,19 +260,19 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
                         bytes.push_str(&format!("{:02X} ", b));
                     }
                 }
-                log(LogLevel::Debug, &format!(
+                debug!(
                     "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes){}",
                     pos, start, start - pos, &bytes,
-                ));
+                );
             }
-            log(LogLevel::Debug, &format!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label));
+            debug!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label);
             pos = end;
         }
         if pos < file_len {
-            log(LogLevel::Debug, &format!(
+            debug!(
                 "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes)",
                 pos, file_len, file_len - pos,
-            ));
+            );
         }
     }
 

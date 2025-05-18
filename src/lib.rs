@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum, ValueHint};
 use clap_complete::Shell;
+use simplelog::LevelFilter;
 use std::fmt;
 use std::fs;
 use std::io::{Error, ErrorKind};
@@ -90,6 +91,7 @@ pub enum CompressionType {
 
 #[derive(Clone, ValueEnum, Debug)]
 pub enum LogLevel {
+    Trace,
     Debug,
     Info,
     Warn,
@@ -107,22 +109,17 @@ impl fmt::Display for CompressionType {
     }
 }
 
-
-pub fn log(level: LogLevel, message: &str) {
-    let level_order = |lvl: &LogLevel| match lvl {
-        LogLevel::Debug => 0,
-        LogLevel::Info  => 1,
-        LogLevel::Warn  => 2,
-        LogLevel::Error => 3,
-    };
-
-    if let Some(current_level) = LOG_LEVEL.get() {
-        if level_order(&level) >= level_order(current_level) {
-            println!("[{level}] {message}");
+impl From<LogLevel> for LevelFilter {
+    fn from(level: LogLevel) -> LevelFilter {
+        match level {
+            LogLevel::Error => LevelFilter::Error,
+            LogLevel::Warn  => LevelFilter::Warn,
+            LogLevel::Info  => LevelFilter::Info,
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Trace => LevelFilter::Trace,
         }
     }
 }
-
 
 /// Returns all PNG files in the given directory.
 pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
