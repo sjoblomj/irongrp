@@ -45,7 +45,9 @@ pub fn render_and_save_frames_to_png(
         let canvas_width = cols * max_frame_width;
         let canvas_height = (frames.len() as f64 / cols as f64).ceil() as u32 * max_frame_height;
 
-        let mut buffer: Vec<u8> = vec![];
+        let pixel_length: usize = if args.use_transparency { 4 } else { 3 }; // RGBA or RGB
+        let mut buffer = vec![0u8; pixel_length * (canvas_width * canvas_height) as usize];
+
         for (i, frame) in frames.iter().enumerate() {
             let col = (i as u32) % cols;
             let row = (i as u32) / cols;
@@ -56,10 +58,10 @@ pub fn render_and_save_frames_to_png(
 
             for y in 0..max_frame_height {
                 for x in 0..max_frame_width {
-                    let dst_index = ((base_y + y) * canvas_width + (base_x + x)) as usize * if args.use_transparency { 4 } else { 3 };
-                    let src_index = (y * max_frame_width + x) as usize * if args.use_transparency { 4 } else { 3 };
-                    buffer[dst_index..dst_index + if args.use_transparency { 4 } else { 3 }]
-                        .copy_from_slice(&temp_img[src_index..src_index  + if args.use_transparency { 4 } else { 3 }]);
+                    let dst_index = ((base_y + y) * canvas_width + (base_x + x)) as usize * pixel_length;
+                    let src_index = (y * max_frame_width + x) as usize * pixel_length;
+                    buffer[dst_index..dst_index + pixel_length]
+                        .copy_from_slice(&temp_img[src_index..src_index  + pixel_length]);
                 }
             }
         }
