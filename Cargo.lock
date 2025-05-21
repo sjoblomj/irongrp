@@ -730,9 +730,9 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "palpngrs"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00926a782906f26154503c320027f8da746fe0803e64b11e0ceffb03edf5cf28"
+checksum = "af03d782eee1796202e19fddb84128a1f6872b2f670e6eb52e69deb14ec31b8f"
 dependencies = [
  "image",
  "log",

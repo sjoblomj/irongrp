@@ -2,7 +2,7 @@ use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::{list_png_files, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use log::{debug, error, info, trace, warn};
-use palpngrs::{read_rgb_palette, PalettizedImageWithMetadata};
+use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -948,11 +948,10 @@ pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: 
 
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> Result<()> {
-    let pal_path = &args.pal_path.as_deref().unwrap();
-    let palette  = read_rgb_palette(pal_path)?;
-
+    let palette = get_palette(args)?;
     let input_path = &args.input_path.clone().unwrap();
-    let mut f  = File::open(input_path)?;
+
+    let mut f = File::open(input_path)?;
     let (header, war1_style) = read_grp_header(&mut f)?;
     let is_uncompressed = detect_uncompressed(input_path, &header, war1_style)?;
 
@@ -975,12 +974,19 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
     )
 }
 
+fn get_palette(args: &Args) -> Result<Vec<[u8; 3]>> {
+    if let Some(path) = &args.pal_path {
+        read_rgb_palette(path)
+    } else {
+        warn!("No palette given - defaulting to greyscale palette");
+        greyscale_palette()
+    }
+}
+
 /// Converts PNGs to a GRP
 pub fn png_to_grp(args: &Args) -> Result<()> {
-    let out_path  = &args.output_path.as_deref().unwrap();
-    let pal_path  = &args.pal_path.as_deref().unwrap();
-
-    let palette   = read_rgb_palette(pal_path)?;
+    let out_path  = args.output_path.as_deref().unwrap();
+    let palette   = get_palette(args)?;
     let png_files = list_png_files(&args.input_path.clone().unwrap())?;
     let compression_type = determine_compression_type(&png_files, &args.compression_type);
 
@@ -1003,16 +1009,6 @@ mod tests {
             *pixel = Rgb(colour);
         }
         img.save(path).expect("Failed to save test PNG");
-    }
-
-    fn dummy_palette() -> Vec<[u8; 3]> {
-        let mut palette = [[0u8; 3]; 256];
-        for (i, rgb) in palette.iter_mut().enumerate() {
-            rgb[0] = i as u8;
-            rgb[1] = i as u8;
-            rgb[2] = i as u8;
-        }
-        Vec::from(palette)
     }
 
 
@@ -1398,7 +1394,7 @@ mod tests {
 
     #[test]
     fn detects_duplicate_frames() {
-        let palette = dummy_palette();
+        let palette = greyscale_palette().unwrap();
         let temp_dir = "temp_test_output";
         fs::create_dir_all(temp_dir).unwrap();
 
@@ -1434,7 +1430,7 @@ mod tests {
 
     #[test]
     fn does_not_deduplicate_different_frames() {
-        let palette = dummy_palette();
+        let palette = greyscale_palette().unwrap();
         let temp_dir = "temp_test_output2";
         fs::create_dir_all(temp_dir).unwrap();
 

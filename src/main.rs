@@ -66,10 +66,6 @@ fn main() -> std::io::Result<()> {
                 error!("Invalid input path, please provide a file path to a GRP file.");
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
             }
-            if (&args.pal_path).is_none() {
-                error!("Invalid pal-path, please provide a file path to a Palette file.");
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing --pal-path argument"));
-            }
             std::fs::create_dir_all(output_path)?;
 
             grp_to_png(&args)?;
@@ -85,10 +81,6 @@ fn main() -> std::io::Result<()> {
             if p.exists() && p.is_dir() {
                 error!("The given output path is a directory; please provide a file path instead.");
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-            }
-            if (&args.pal_path).is_none() {
-                error!("Invalid pal-path, please provide a file path to a Palette file.");
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing --pal-path argument"));
             }
 
             png_to_grp(&args)?;
