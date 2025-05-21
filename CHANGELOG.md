@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5] - unreleased
+
+### Added
+- Included fallback greyscale palette.
+
+### Changed
+- Moved the PNG handling to an external library.
+- Better logging: Introduced logging library and the log level 'trace'.
+
+### Removed
+- Removed some Optimisation schemes from CompressionType Optimised. This makes it slightly less optimised but identical to how Blizzard did it, and the code is less complex.
+
+
+
 ## [0.4] - 2025-05-10
 
 ### Added
