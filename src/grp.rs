@@ -1,5 +1,5 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
-use crate::{list_png_files, Args, CompressionType, LogLevel, LOG_LEVEL, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use log::{debug, error, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
@@ -476,14 +476,12 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     let mut encoded = Vec::new();
     let mut i = 0;
 
-    if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
-        debug!("Beginning to encode using compression type '{}'", compression_type);
-        for x in 0..row_pixels.len() {
-            trace!(
-                "x: {:2}, row_pixels[i]: {:2X} ({:3})",
-                x, row_pixels[x], row_pixels[x],
-            );
-        }
+    debug!("Beginning to encode using compression type '{}'", compression_type);
+    for x in 0..row_pixels.len() {
+        trace!(
+            "x: {:2}, row_pixels[i]: {:2X} ({:3})",
+            x, row_pixels[x], row_pixels[x],
+        );
     }
 
     let same_colour_threshold = if let CompressionType::Optimised = compression_type {
