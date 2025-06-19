@@ -2,10 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5] - unreleased
+## [0.5] - 2025-06-19
 
 ### Added
+- ImHex pattern language definitions for Normal GRPs, Uncompressed GRPs and WarCraft I style GRPs.
+- Added yazi integration.
 - Included fallback greyscale palette.
+- Added a Readme file.
+- Added a logo.
 
 ### Changed
 - Moved the PNG handling to an external library.
