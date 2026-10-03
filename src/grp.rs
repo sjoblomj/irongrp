@@ -588,14 +588,20 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     encoded
 }
 
-/// Encodes pixels to an RLE-compressed ImageData
-fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_type: &CompressionType) -> ImageData {
+/// Encodes pixels to an RLE-compressed ImageData. Fails if the encoded data is too large
+/// for the row offsets, which are stored as u16 relative to the start of the frame data.
+fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_type: &CompressionType) -> Result<ImageData> {
     let mut raw_row_data = Vec::new();
     let mut rle_data     = Vec::new();
     let mut row_offsets  = Vec::with_capacity(height as usize);
 
     for row in 0..height {
-        let row_start_offset = rle_data.len() as u16 + (height * 2);
+        let row_start_offset = rle_data.len() + height as usize * 2;
+        let row_start_offset = u16::try_from(row_start_offset).map_err(|_| Error::CannotEncode(format!(
+            "Frame of size {}x{} is too complex to compress: row {} would start at offset {}, \
+            above the limit of {}. Try reducing the frame size or the number of colours.",
+            width, height, row, row_start_offset, u16::MAX,
+        )))?;
 
         let start = row as usize * width as usize;
         let end = start + width as usize;
@@ -613,12 +619,12 @@ fn encode_grp_rle_data(width: u16, height: u16, pixels: Vec<u8>, compression_typ
         row_offsets.push(row_start_offset);
     }
 
-    ImageData {
+    Ok(ImageData {
         row_offsets,
         raw_row_data,
         converted_pixels: pixels,
         grp_type: GrpType::Normal,
-    }
+    })
 }
 
 /// Encodes pixels to an uncompressed ImageData
@@ -720,7 +726,7 @@ fn png_to_grpframe(
             return Err(Error::CannotEncode(format!(
                 "Width ({}) is above limit of {}", image.width, u8::MAX)))
         }
-        encode_grp_rle_data(image.width, image.height, image.palettized_image, compression)
+        encode_grp_rle_data(image.width, image.height, image.palettized_image, compression)?
 
     } else {
         let extended_width = image_should_be_extended(image.width);
@@ -1041,6 +1047,55 @@ mod tests {
 
         let err = files_to_grp(vec![file.clone()], &palette, &CompressionType::Normal)
             .expect_err("expected a too-wide image to be rejected");
+        assert!(matches!(err.root(), Error::CannotEncode(_)));
+        assert!(err.to_string().starts_with(&file));
+    }
+
+    /// Pixels where every row is 1, 2, ..., 255, so no two neighbours are the same and
+    /// nothing is transparent. Each 255-pixel row RLE-encodes to 260 bytes (5 literal copies).
+    fn incompressible_pixels(width: u16, height: u16) -> Vec<u8> {
+        (0..height).flat_map(|_| (0..width).map(|x| (x % 255) as u8 + 1)).collect()
+    }
+
+    #[test]
+    fn encode_rle_data_accepts_frame_whose_last_row_offset_fits_in_u16() {
+        // Last row starts at 251 * 2 + 250 * 260 = 65502
+        let (width, height) = (255, 251);
+        let image_data = encode_grp_rle_data(
+            width, height, incompressible_pixels(width, height), &CompressionType::Normal,
+        ).expect("expected the frame to fit");
+
+        assert_eq!(*image_data.row_offsets.last().unwrap(), 65502);
+    }
+
+    #[test]
+    fn encode_rle_data_rejects_frame_whose_row_offsets_overflow_u16() {
+        // Last row would start at 252 * 2 + 251 * 260 = 65764
+        for compression_type in [CompressionType::Normal, CompressionType::Optimised] {
+            let (width, height) = (255, 252);
+            let result = encode_grp_rle_data(
+                width, height, incompressible_pixels(width, height), &compression_type,
+            );
+            assert!(matches!(result, Err(Error::CannotEncode(_))), "for {}", compression_type);
+        }
+    }
+
+    #[test]
+    fn files_to_grp_rejects_incompressible_max_size_png() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("noise.png").to_str().unwrap().to_string();
+
+        let (width, height) = (255, 255);
+        let pixels = incompressible_pixels(width, height);
+        let img = image::RgbImage::from_fn(width as u32, height as u32, |x, y| {
+            let v = pixels[(y * width as u32 + x) as usize];
+            image::Rgb([v, v, v])
+        });
+        img.save(&file).unwrap();
+
+        let err = files_to_grp(vec![file.clone()], &palette, &CompressionType::Normal)
+            .expect_err("expected an incompressible 255x255 image to be rejected");
         assert!(matches!(err.root(), Error::CannotEncode(_)));
         assert!(err.to_string().starts_with(&file));
     }

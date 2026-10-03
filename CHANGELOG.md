@@ -23,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - Corrected bug related to boundary checks for Warcraft I style GRPs.
 - Fix off-by-one in the PNG width check that rejected 511-pixel-wide images, the actual maximum for extended uncompressed GRPs.
 - Corrected crash when analysing a frame number equal to the number of frames, and a row number equal to the frame height is now rejected instead of silently ignored.
+- Corrected crash (or, in release builds, a silently corrupt GRP) when converting a large PNG that compresses poorly, such as a 255x255 frame with no repeated pixels. Such frames are now rejected with an error, since their row offsets do not fit in the GRP format.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
