@@ -15,7 +15,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     let file_len = file.metadata()?.len();
 
     let (header, war1_style) = read_grp_header(&mut file)?;
-    let is_uncompressed = detect_uncompressed(input_path, &header, war1_style)?;
+    let is_uncompressed = detect_uncompressed(&mut file, &header, war1_style)?;
 
     let grp_type = if is_uncompressed && war1_style {
         GrpType::War1

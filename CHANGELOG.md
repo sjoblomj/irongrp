@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Better handling of argument validation by using clap.
+- Reuse the open file handle in `detect_uncompressed` instead of reopening the GRP a second time.
 
 ### Bug fixes
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.

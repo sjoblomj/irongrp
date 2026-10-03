@@ -883,10 +883,9 @@ fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedIm
     }
 }
 
-/// Detects whether the given GRP is uncompressed (unusual) or not (normal)
-pub fn detect_uncompressed(input_path: &String, header: &GrpHeader, war1_style: bool) -> Result<bool> {
+/// Detects whether the given GRP is uncompressed (unusual) or not (normal).
+pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war1_style: bool) -> Result<bool> {
 
-    let mut file = File::open(input_path)?;
     let file_len = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(get_header_size(war1_style) as u64))?;
 
@@ -932,7 +931,7 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
 
     let mut f = File::open(input_path)?;
     let (header, war1_style) = read_grp_header(&mut f)?;
-    let is_uncompressed = detect_uncompressed(input_path, &header, war1_style)?;
+    let is_uncompressed = detect_uncompressed(&mut f, &header, war1_style)?;
 
     let grp_type = if is_uncompressed && war1_style {
         GrpType::War1
