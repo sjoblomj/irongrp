@@ -49,7 +49,7 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
             frames[frame_number].width as u16 + EXTENDED_IMAGE_WIDTH
         };
         let next_offset = if frame_number + 1 < frames.len() {
-            frames[frame_number + 1].image_data_offset
+            frames[frame_number + 1].decoded_image_data_offset()
         } else {
             file_len as u32
         };
@@ -59,21 +59,21 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
         info!("- Y offset: {}", frames[frame_number].y_offset);
         info!("- Width:    {}", width);
         info!("- Height:   {}", frames[frame_number].height);
-        info!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].image_data_offset);
+        info!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].decoded_image_data_offset());
         info!("- Next frames image data offset: 0x{:0>2X}", next_offset);
         if frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 info!(
                     "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
                     i, i, frames[frame_number].image_data.row_offsets[i],
-                    frames[frame_number].image_data.row_offsets[i] + frames[frame_number].image_data_offset as u16,
+                    frames[frame_number].image_data.row_offsets[i] + frames[frame_number].decoded_image_data_offset() as u16,
                 );
             }
         }
         if args.analyse_row_number.is_some() && frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 if row_number == i as u8 {
-                    let start = frames[frame_number].image_data_offset as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
+                    let start = frames[frame_number].decoded_image_data_offset() as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
                     println!();
                     info!(
                         "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
@@ -131,7 +131,7 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     used_ranges.push((6, 6 + (frames.len() * 8) as u64, "Frame headers".to_string()));
 
     for (frame_index, frame) in frames.iter().enumerate() {
-        let data_offset = frame.image_data_offset as u64;
+        let data_offset = frame.decoded_image_data_offset() as u64;
         let row_table_end = data_offset + (frame.image_data.row_offsets.len() * 2) as u64;
         let label = format!("Frame {: >2} row offset table ({} rows)", frame_index, frame.height);
         used_ranges.push((data_offset, row_table_end, label));
@@ -353,6 +353,42 @@ mod tests {
             .collect();
         let expected: Vec<Vec<usize>> = (0..20).map(|i| vec![i, i + 20]).collect();
         assert_eq!(frames_with_identical_image_data(&frames), expected);
+    }
+
+    /// Writes an Extended Uncompressed GRP with two 257x2 frames, and returns its path
+    fn write_extended_uncompressed_grp(dir: &std::path::Path) -> String {
+        let (width, height) = (257usize, 2usize);
+        let frame_len = (width * height) as u32;
+        let first_offset = 6 + 2 * 8;
+
+        // Max width 512 rather than 257, since the low byte of 257 is non-zero,
+        // which would make the reader attempt to parse the GRP as WarCraft I style.
+        let mut data = vec![0x02, 0x00, 0x00, 0x02, 0x02, 0x00];
+        for i in 0..2 {
+            let offset = (first_offset + i * frame_len) | 0x8000_0000; // Extended bit
+            data.extend([0, 0, (width - 256) as u8, height as u8]);
+            data.extend(offset.to_le_bytes());
+        }
+        data.extend(vec![0x11; width * height]);
+        data.extend(vec![0x22; width * height]);
+
+        let path = dir.join("extended.grp");
+        std::fs::write(&path, data).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn analyses_extended_uncompressed_grp() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_extended_uncompressed_grp(temp_dir.path());
+
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::Uncompressed);
+        assert_eq!(frames[0].image_data.grp_type, GrpType::UncompressedExtended);
+
+        analyse_grp(&make_test_args(&path, None)).expect("expected the whole GRP to be analysed");
+        analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
+        analyse_grp(&make_test_args(&path, Some(1))).expect("expected frame 1 to be analysed");
     }
 
     #[test]

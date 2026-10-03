@@ -65,6 +65,16 @@ impl GrpFrame {
         }
     }
 
+    /// The actual offset in the file of the frame's image data. For Extended Uncompressed
+    /// frames, `image_data_offset` has its highest bit set, which is cleared here.
+    pub fn decoded_image_data_offset(&self) -> u32 {
+        if self.image_data.grp_type == GrpType::UncompressedExtended {
+            self.image_data_offset & !EXTENDED_OFFSET_BIT
+        } else {
+            self.image_data_offset
+        }
+    }
+
     /// The length of the frame in bytes, as it would be written to a GRP file
     fn grp_frame_len(&self) -> usize {
         let row_offsets_size     = self.image_data.row_offsets.len() * 2; // u16 = 2 bytes
@@ -1599,6 +1609,32 @@ mod tests {
         assert_eq!((read_frames[1].width, read_frames[1].height), (3, 2));
         assert_eq!(read_frames[0].image_data.converted_pixels, vec![5; 6]);
         assert_eq!(read_frames[1].image_data.converted_pixels, vec![5; 6]);
+    }
+
+    #[test]
+    fn decoded_width_and_offset_account_for_extended_frames() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let narrow = temp_dir.path().join("frame_000.png").to_str().unwrap().to_string();
+        let wide   = temp_dir.path().join("frame_001.png").to_str().unwrap().to_string();
+        create_test_png(&narrow, [7, 7, 7], 10, 2);
+        create_test_png(&wide,   [8, 8, 8], 300, 2);
+
+        let (frames, _, _) = files_to_grp(
+            vec![narrow, wide], &palette, &CompressionType::Uncompressed,
+        ).unwrap();
+
+        // 6 byte header, 2 frame headers of 8 bytes each, then 10x2 bytes of image data for frame 0
+        let (frame0_offset, frame1_offset) = (6 + 2 * 8, 6 + 2 * 8 + 10 * 2);
+
+        assert_eq!(frames[0].image_data_offset, frame0_offset);
+        assert_eq!(frames[0].decoded_image_data_offset(), frame0_offset);
+        assert_eq!(frames[0].decoded_width(), 10);
+
+        assert_eq!(frames[1].image_data_offset, frame1_offset | EXTENDED_OFFSET_BIT);
+        assert_eq!(frames[1].decoded_image_data_offset(), frame1_offset);
+        assert_eq!(frames[1].width, 44); // 300 - 256
+        assert_eq!(frames[1].decoded_width(), 300);
     }
 
     #[test]
