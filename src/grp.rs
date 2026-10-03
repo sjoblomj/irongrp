@@ -4,10 +4,8 @@ use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_F
 use clap::ValueEnum;
 use log::{debug, error, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -58,6 +56,15 @@ struct FrameDedupKey {
 }
 
 impl GrpFrame {
+    /// The actual width of the frame in pixels, accounting for Extended Uncompressed frames
+    pub fn decoded_width(&self) -> u16 {
+        if self.image_data.grp_type == GrpType::UncompressedExtended {
+            self.width as u16 + EXTENDED_IMAGE_WIDTH
+        } else {
+            self.width as u16
+        }
+    }
+
     /// The length of the frame in bytes, as it would be written to a GRP file
     fn grp_frame_len(&self) -> usize {
         let row_offsets_size     = self.image_data.row_offsets.len() * 2; // u16 = 2 bytes
@@ -762,7 +769,7 @@ fn files_to_grp(
 ) -> Result<(Vec<GrpFrame>, u16, u16)> {
 
     let mut grp_frames: Vec<GrpFrame> = Vec::with_capacity(png_files.len());
-    let mut seen_frames: HashMap<u64, usize> = HashMap::new();
+    let mut seen_frames: HashMap<FrameDedupKey, usize> = HashMap::new();
 
     let header_len = get_header_size(*compression_type == CompressionType::War1);
     let mut image_data_offset = (header_len + png_files.len() * 8) as u32; // Initialize to GRP header size
@@ -875,8 +882,9 @@ fn determine_compression_type(png_files: &[String], compression_type: &Compressi
     compression
 }
 
-/// Make a hash of the data that is relevant for determining whether to reuse a frame or not
-fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedImageWithMetadata<u8, u16>) -> u64 {
+/// Make a key of the data that is relevant for determining whether to reuse a frame or not.
+/// Two frames may share image data if and only if their keys are equal.
+fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedImageWithMetadata<u8, u16>) -> FrameDedupKey {
     // For normal GRPs, we reference a previous frame if the current image data and its
     // dimensions are identical to a frame we've already seen. The dimensions are needed since
     // e.g. a 2x3 and a 3x2 frame of the same colour have identical image data.
@@ -884,16 +892,12 @@ fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedIm
     let include_offsets = *compression_type != CompressionType::Normal
         && *compression_type != CompressionType::Optimised;
 
-    let key = FrameDedupKey {
+    FrameDedupKey {
         image_data: image.palettized_image.clone(),
         width:      image.width,
         height:     image.height,
         offsets:    include_offsets.then_some((image.x_offset, image.y_offset)),
-    };
-
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
+    }
 }
 
 /// Detects whether the given GRP is uncompressed (unusual) or not (normal).
@@ -1595,6 +1599,24 @@ mod tests {
         assert_eq!((read_frames[1].width, read_frames[1].height), (3, 2));
         assert_eq!(read_frames[0].image_data.converted_pixels, vec![5; 6]);
         assert_eq!(read_frames[1].image_data.converted_pixels, vec![5; 6]);
+    }
+
+    #[test]
+    fn frame_reuse_keys_are_equal_only_for_identical_frames() {
+        let image = |x_offset: u8, width: u16, height: u16, pixels: Vec<u8>| PalettizedImageWithMetadata::new(
+            palpngrs::Offset::new(x_offset, 0), palpngrs::Size::new(width, height), palpngrs::Size::new(8, 8), pixels,
+        );
+        let base = image(0, 2, 2, vec![1, 2, 3, 4]);
+
+        for compression_type in [CompressionType::Normal, CompressionType::Uncompressed] {
+            let key = |img: &PalettizedImageWithMetadata<u8, u16>| make_frame_reuse_key(&compression_type, img);
+            assert!(key(&base) == key(&image(0, 2, 2, vec![1, 2, 3, 4])), "for {}", compression_type);
+            assert!(key(&base) != key(&image(0, 2, 2, vec![1, 2, 3, 5])), "for {}", compression_type);
+            assert!(key(&base) != key(&image(0, 4, 1, vec![1, 2, 3, 4])), "for {}", compression_type);
+        }
+        let moved = image(3, 2, 2, vec![1, 2, 3, 4]);
+        assert!(make_frame_reuse_key(&CompressionType::Normal,       &base) == make_frame_reuse_key(&CompressionType::Normal,       &moved));
+        assert!(make_frame_reuse_key(&CompressionType::Uncompressed, &base) != make_frame_reuse_key(&CompressionType::Uncompressed, &moved));
     }
 
     #[test]

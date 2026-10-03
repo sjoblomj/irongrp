@@ -1,11 +1,9 @@
 use crate::error::{Error, InFile, Result};
-use crate::grp::{read_grp_file, GrpType, EXTENDED_IMAGE_WIDTH};
+use crate::grp::{read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::Args;
 use log::{debug, info, warn};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
@@ -157,20 +155,10 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     }
 
 
-    let mut hash_map: HashMap<u64, Vec<usize>> = HashMap::new();
-    for (i, frame) in frames.iter().enumerate() {
-        let mut hasher = DefaultHasher::new();
-        frame.image_data.converted_pixels.hash(&mut hasher);
-        let hash = hasher.finish();
-        hash_map.entry(hash).or_default().push(i);
-    }
-
-    let mut duplicates_found = false;
-    for (_, indices) in hash_map {
-        if indices.len() > 1 {
-            duplicates_found = true;
-            warn!("⚠ Identical image data found in frames: {:?}", indices);
-        }
+    let duplicates = frames_with_identical_image_data(&frames);
+    let duplicates_found = !duplicates.is_empty();
+    for indices in duplicates {
+        warn!("⚠ Identical image data found in frames: {:?}", indices);
     }
     if !duplicates_found {
         info!("✔ All frames have unique pixel data");
@@ -279,10 +267,24 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Returns groups of frames that have identical dimensions and pixels. Each group is sorted
+/// by frame index, and the groups are sorted by their first frame index.
+fn frames_with_identical_image_data(frames: &[GrpFrame]) -> Vec<Vec<usize>> {
+    let mut map: HashMap<(u16, u8, &[u8]), Vec<usize>> = HashMap::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let key = (frame.decoded_width(), frame.height, frame.image_data.converted_pixels.as_slice());
+        map.entry(key).or_default().push(i);
+    }
+    let mut groups: Vec<Vec<usize>> = map.into_values().filter(|indices| indices.len() > 1).collect();
+    groups.sort();
+    groups
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grp::ImageData;
     use crate::{CompressionType, LogLevel, OperationMode};
 
     fn make_test_args(input_path: &str, frame_number: Option<u16>) -> Args {
@@ -300,6 +302,57 @@ mod tests {
             log_level:          LogLevel::Info,
             generator:          None,
         }
+    }
+
+    fn make_test_frame(pixel_value: u8, width: u8, height: u8, grp_type: GrpType) -> GrpFrame {
+        let actual_width = if grp_type == GrpType::UncompressedExtended {
+            width as usize + EXTENDED_IMAGE_WIDTH as usize
+        } else {
+            width as usize
+        };
+        GrpFrame {
+            x_offset: 0,
+            y_offset: 0,
+            width,
+            height,
+            image_data_offset: 0,
+            image_data: ImageData {
+                row_offsets:      vec![],
+                raw_row_data:     vec![],
+                converted_pixels: vec![pixel_value; actual_width * height as usize],
+                grp_type,
+            },
+        }
+    }
+
+    #[test]
+    fn identical_image_data_requires_same_pixels_and_dimensions() {
+        let frames = vec![
+            make_test_frame(5, 2, 3, GrpType::Normal),
+            make_test_frame(5, 3, 2, GrpType::Normal), // Same pixels, different dimensions
+            make_test_frame(6, 2, 3, GrpType::Normal),
+            make_test_frame(5, 2, 3, GrpType::Normal), // Identical to 0
+        ];
+        assert_eq!(frames_with_identical_image_data(&frames), vec![vec![0, 3]]);
+    }
+
+    #[test]
+    fn identical_image_data_distinguishes_extended_width() {
+        // Width 4 normally and 4 + 256 in an extended frame. Height 0 gives identical (empty) pixels.
+        let frames = vec![
+            make_test_frame(5, 4, 0, GrpType::Uncompressed),
+            make_test_frame(5, 4, 0, GrpType::UncompressedExtended),
+        ];
+        assert!(frames_with_identical_image_data(&frames).is_empty());
+    }
+
+    #[test]
+    fn identical_image_data_returns_groups_in_frame_order() {
+        let frames: Vec<GrpFrame> = (0..40)
+            .map(|i| make_test_frame((i % 20) as u8, 2, 2, GrpType::Normal))
+            .collect();
+        let expected: Vec<Vec<usize>> = (0..20).map(|i| vec![i, i + 20]).collect();
+        assert_eq!(frames_with_identical_image_data(&frames), expected);
     }
 
     #[test]

@@ -4,7 +4,6 @@ use crate::{Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use log::{debug, info};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub fn render_and_save_frames_to_png(
     frames: &[GrpFrame],
@@ -73,30 +72,11 @@ pub fn render_and_save_frames_to_png(
 
     } else {
         // Non-tiled mode - save each frame as a separate image.
-
-        // The following two HashMaps are used for printing duplicates
-        // Map: image_data_offset -> list of frame indices
-        let mut offset_map: HashMap<u32, Vec<usize>> = HashMap::new();
-        // Map: image hash -> list of frame indices
-        let mut image_hash_map: HashMap<u64, Vec<usize>> = HashMap::new();
-
         for (i, frame) in frames.iter().enumerate() {
             if args.frame_number.is_some() && args.frame_number != Some(i as u16) {
                 continue;
             }
-            offset_map.entry(frame.image_data_offset)
-                .or_default()
-                .push(i);
-
             let buffer = image_to_buffer(frame, &palette, max_frame_width, max_frame_height, args.use_transparency)?;
-
-            let mut hasher = DefaultHasher::new();
-            buffer.hash(&mut hasher); // Hash the raw RGB(A) buffer
-            let image_hash = hasher.finish();
-
-            image_hash_map.entry(image_hash)
-                .or_default()
-                .push(i);
 
             let grp_type = if frame.image_data.grp_type == GrpType::Normal {
                 ""
@@ -112,32 +92,69 @@ pub fn render_and_save_frames_to_png(
             info!("Saved frame {:2} to {}", i, output_path);
         }
 
-        let mut offset_duplicates_vec: Vec<(&u32, &Vec<usize>)> = offset_map
-            .iter()
-            .filter(|(_, indices)| indices.len() > 1)
-            .collect();
-        // Sort by the lowest frame index in each group
-        offset_duplicates_vec.sort_by_key(|(_, indices)| *indices.iter().min().unwrap());
-
-        let mut offset_duplicates: HashSet<usize> = HashSet::new();
-        for (_, indices) in offset_duplicates_vec {
-            info!("Identical frames: {:?}", indices);
-            offset_duplicates.extend(indices);
-        }
-
-        for (_, indices) in &image_hash_map {
-            if indices.len() > 1 {
-                let overlap = indices.iter().any(|idx| offset_duplicates.contains(idx));
-                if !overlap {
-                    info!(
-                        "Identical frames with duplicated image data in GRP: {:?}", indices,
-                    );
-                }
+        if args.frame_number.is_none() {
+            let duplicates = find_identical_frames(frames);
+            for indices in duplicates.shared_image_data {
+                info!("Identical frames: {:?}", indices);
+            }
+            for indices in duplicates.duplicated_image_data {
+                info!("Identical frames with duplicated image data in GRP: {:?}", indices);
             }
         }
     }
 
     Ok(())
+}
+
+/// Groups of frames that are identical, each group sorted by frame index,
+/// and the groups sorted by their first frame index.
+#[derive(Debug, PartialEq)]
+struct IdenticalFrames {
+    /// Frames that refer to the same image data in the GRP
+    shared_image_data: Vec<Vec<usize>>,
+    /// Frames whose images are identical, but whose image data is stored more than once in the GRP
+    duplicated_image_data: Vec<Vec<usize>>,
+}
+
+/// Frames with equal keys render to identical images
+#[derive(Hash, Eq, PartialEq)]
+struct RenderedImageKey<'a> {
+    x_offset: u8,
+    y_offset: u8,
+    width:    u16,
+    height:   u8,
+    pixels:   &'a [u8],
+}
+
+fn find_identical_frames(frames: &[GrpFrame]) -> IdenticalFrames {
+    let mut offset_map: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut image_map: HashMap<RenderedImageKey, Vec<usize>> = HashMap::new();
+
+    for (i, frame) in frames.iter().enumerate() {
+        offset_map.entry(frame.image_data_offset).or_default().push(i);
+
+        let key = RenderedImageKey {
+            x_offset: frame.x_offset,
+            y_offset: frame.y_offset,
+            width:    frame.decoded_width(),
+            height:   frame.height,
+            pixels:   &frame.image_data.converted_pixels,
+        };
+        image_map.entry(key).or_default().push(i);
+    }
+
+    let groups = |map: Vec<Vec<usize>>| -> Vec<Vec<usize>> {
+        let mut groups: Vec<Vec<usize>> = map.into_iter().filter(|indices| indices.len() > 1).collect();
+        groups.sort();
+        groups
+    };
+    let shared_image_data = groups(offset_map.into_values().collect());
+    // Only report identical images whose data is actually stored more than once
+    let duplicated_image_data = groups(image_map.into_values().filter(|indices| {
+        indices.iter().map(|&i| frames[i].image_data_offset).collect::<HashSet<_>>().len() > 1
+    }).collect());
+
+    IdenticalFrames { shared_image_data, duplicated_image_data }
 }
 
 fn image_to_buffer(
@@ -148,15 +165,9 @@ fn image_to_buffer(
     use_transparency: bool,
 ) -> Result<Vec<u8>> {
 
-    let width = if frame.image_data.grp_type == GrpType::UncompressedExtended {
-        frame.width as u32 + EXTENDED_IMAGE_WIDTH as u32
-    } else {
-        frame.width as u32
-    };
-
     let image = PalettizedImageWithMetadata::new(
         Offset::new(frame.x_offset as u32, frame.y_offset as u32),
-        Size::new(width, frame.height as u32),
+        Size::new(frame.decoded_width() as u32, frame.height as u32),
         Size::new(max_frame_width, max_frame_height),
         frame.image_data.converted_pixels.clone(),
     );
@@ -264,6 +275,70 @@ mod tests {
         assert!(!Path::new(&format!("{}/frame_000.png", dir)).exists());
         assert!( Path::new(&format!("{}/frame_001.png", dir)).exists());
         assert!(!Path::new(&format!("{}/frame_002.png", dir)).exists());
+    }
+
+    fn make_test_frame_at(pixel_value: u8, width: u8, height: u8, image_data_offset: u32) -> GrpFrame {
+        let mut frame = make_test_frame(pixel_value, width, height);
+        frame.image_data_offset = image_data_offset;
+        frame
+    }
+
+    #[test]
+    fn find_identical_frames_groups_frames_by_shared_and_duplicated_image_data() {
+        let frames = vec![
+            make_test_frame_at(10, 4, 4, 100), // 0: shares image data with 2
+            make_test_frame_at(20, 4, 4, 200), // 1: same image as 3, stored twice
+            make_test_frame_at(10, 4, 4, 100), // 2
+            make_test_frame_at(20, 4, 4, 300), // 3
+            make_test_frame_at(30, 4, 4, 400), // 4: unique
+        ];
+
+        assert_eq!(find_identical_frames(&frames), IdenticalFrames {
+            shared_image_data:     vec![vec![0, 2]],
+            duplicated_image_data: vec![vec![1, 3]],
+        });
+    }
+
+    #[test]
+    fn find_identical_frames_reports_copy_of_shared_image_data_as_duplicated() {
+        let frames = vec![
+            make_test_frame_at(10, 4, 4, 100),
+            make_test_frame_at(10, 4, 4, 100),
+            make_test_frame_at(10, 4, 4, 200), // Same image, but its data is stored again
+        ];
+
+        assert_eq!(find_identical_frames(&frames), IdenticalFrames {
+            shared_image_data:     vec![vec![0, 1]],
+            duplicated_image_data: vec![vec![0, 1, 2]],
+        });
+    }
+
+    #[test]
+    fn find_identical_frames_requires_same_dimensions_and_offsets() {
+        let mut moved = make_test_frame_at(5, 2, 3, 300);
+        moved.x_offset = 1;
+        let frames = vec![
+            make_test_frame_at(5, 2, 3, 100),
+            make_test_frame_at(5, 3, 2, 200), // Same pixels, different dimensions
+            moved,                             // Same pixels and dimensions, different offset
+        ];
+
+        assert_eq!(find_identical_frames(&frames), IdenticalFrames {
+            shared_image_data:     vec![],
+            duplicated_image_data: vec![],
+        });
+    }
+
+    #[test]
+    fn find_identical_frames_returns_groups_in_frame_order() {
+        // Many groups, so that HashMap iteration order would be likely to differ from frame order
+        let frames: Vec<GrpFrame> = (0..40)
+            .map(|i| make_test_frame_at((i % 20) as u8, 2, 2, i * 10))
+            .collect();
+
+        let duplicated = find_identical_frames(&frames).duplicated_image_data;
+        let expected: Vec<Vec<usize>> = (0..20).map(|i| vec![i, i + 20]).collect();
+        assert_eq!(duplicated, expected);
     }
 
     #[test]
