@@ -13,16 +13,16 @@ To change the palette, bind a key to the plugin's entry in your `keymap.toml`
 
 ```toml
 [[manager.prepend_keymap]]
-on   = [ "p" ]
+on   = [ "i" ]
 run  = "plugin irongrp"
 desc = "Set palette for GRP preview"
 ```
 
-While previewing a GRP file, press the bound key (`p` in the example above) to
+While previewing a GRP file, press the bound key (`i` in the example above) to
 open a menu with:
 
 - The most recently used palettes (up to 9), each bound to a digit key.
-- `p` — Type a new palette path in a text input. Submitting an empty value
+- `i` — Type a new palette path in a text input. Submitting an empty value
   switches to greyscale for the hovered file.
 - `g` — Switch the hovered file to greyscale (no palette).
 
