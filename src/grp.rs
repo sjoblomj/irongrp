@@ -490,13 +490,8 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
         3
     };
 
-    let mut safety_break = 0;
     while i < row_pixels.len() {
-        safety_break += 1;
-        if safety_break > 4096 {
-            error!("Seems like we're stuck in an infinite encoding loop, after 4096 iterations. Breaking.");
-            break;
-        }
+        let prev_i = i;
         let current_colour = row_pixels[i];
 
         trace!(
@@ -578,6 +573,14 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                 i += run_len;
             }
         }
+        // Each branch above must advance `i` by at least one pixel, otherwise the outer loop
+        // would never terminate. Asserting in debug builds turns any future regression into an
+        // immediate test failure instead of silently looping
+        debug_assert!(
+            i > prev_i,
+            "encode_grp_rle_row failed to advance at position {} (row length {})",
+            prev_i, row_pixels.len(),
+        );
     }
 
     encoded
@@ -1504,12 +1507,23 @@ mod tests {
     // This ensures our encoder and decoder are inverses of each other and that the RLE logic
     // works across a wide variety of input patterns, including edge cases we might not think to test manually.
     //
-    // proptest generates hundreds of random rows (length 0 to 127) and runs the test for each.
+    // Width range covers from empty rows up to the EXTENDED_IMAGE_WIDTH (256) limit, exercising
+    // the literal-copy run-length cap (63) several times over. Both Normal and Optimised
+    // thresholds are tested so the more aggressive Optimised path (threshold 2) is also fuzzed.
     proptest! {
         #[test]
-        fn prop_encode_decode_roundtrip(row in proptest::collection::vec(0u8..=255, 0..128)) {
+        fn prop_encode_decode_roundtrip_normal(row in proptest::collection::vec(0u8..=255, 0..256)) {
             let width = row.len();
             let encoded = encode_grp_rle_row(&row, &CompressionType::Normal);
+            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width as u16);
+            prop_assert_eq!(decoded, row);
+            prop_assert_eq!(encoded_length, encoded.len());
+        }
+
+        #[test]
+        fn prop_encode_decode_roundtrip_optimised(row in proptest::collection::vec(0u8..=255, 0..256)) {
+            let width = row.len();
+            let encoded = encode_grp_rle_row(&row, &CompressionType::Optimised);
             let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width as u16);
             prop_assert_eq!(decoded, row);
             prop_assert_eq!(encoded_length, encoded.len());
