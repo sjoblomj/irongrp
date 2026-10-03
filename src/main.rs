@@ -3,7 +3,7 @@ use clap_complete::{generate, Generator};
 use irongrp::analyse::analyse_grp;
 use irongrp::grp::{grp_to_png, png_to_grp};
 use irongrp::{Args, OperationMode};
-use log::{error, info};
+use log::info;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
 use std::io::stdout;
 use std::path::Path;
@@ -25,47 +25,21 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    if args.mode.is_none() {
-        error!("Mode of operation must be specified!");
-        std::process::exit(1);
-    }
-    if args.input_path.is_none() {
-        error!("Input path must be specified!");
-        std::process::exit(1);
-    }
-    let input_path = &args.input_path.clone().unwrap();
+    // Argument-combination checks that clap's derive attributes can't express, because they
+    // depend on the *value* of --mode rather than just its presence. All other combination
+    // constraints (requires / conflicts_with / required_unless_present / required_if_eq_any)
+    // are declared on the Args struct in lib.rs and enforced by clap at parse time.
+    validate_value_dependencies(&args);
 
-    if !args.tiled && args.max_width.is_some() {
-        error!("The 'max-width' argument is only applicable when using the 'tiled' argument.");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-    }
-    if args.tiled && args.frame_number.is_some() {
-        error!("The 'frame-number' argument is not applicable when using the 'tiled' argument.");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-    }
-    if args.mode == Some(OperationMode::PngToGrp) && args.frame_number.is_some() {
-        error!("The 'frame-number' argument is not applicable when using the 'png-to-grp' mode.");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-    }
-    if args.mode != Some(OperationMode::AnalyseGrp) && args.analyse_row_number.is_some() {
-        error!("The 'analyse-row-number' argument is only applicable when using the 'analyse-grp' mode.");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-    }
-    if args.frame_number.is_none() && args.analyse_row_number.is_some() {
-        error!("The 'analyse-row-number' argument is only applicable when used together with the 'frame-number' argument.");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-    }
+    // After clap parsing + validate_value_dependencies, --mode and --input-path are guaranteed
+    // to be Some(_), and --output-path is Some(_) whenever the mode requires it.
+    let mode = args.mode.as_ref().unwrap();
+    let input_path = args.input_path.as_deref().unwrap();
 
-    match args.mode.clone().unwrap() {
+    match mode {
         OperationMode::GrpToPng => {
-            let output_path = &args.output_path
-                .as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing --output-path argument"))?;
-            let p = Path::new(input_path);
-            if !p.exists() || p.is_dir() {
-                error!("Invalid input path, please provide a file path to a GRP file.");
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-            }
+            let output_path = args.output_path.as_deref().unwrap();
+            require_existing_file(input_path)?;
             std::fs::create_dir_all(output_path)?;
 
             grp_to_png(&args)?;
@@ -73,14 +47,12 @@ fn main() -> std::io::Result<()> {
         },
 
         OperationMode::PngToGrp => {
-            let output_path = &args.output_path
-                .as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing --output-path argument"))?;
-
-            let p = Path::new(output_path);
-            if p.exists() && p.is_dir() {
-                error!("The given output path is a directory; please provide a file path instead.");
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+            let output_path = args.output_path.as_deref().unwrap();
+            if Path::new(output_path).is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("'--output-path' value '{}' is a directory; expected a file path", output_path),
+                ));
             }
 
             png_to_grp(&args)?;
@@ -88,15 +60,38 @@ fn main() -> std::io::Result<()> {
         },
 
         OperationMode::AnalyseGrp => {
-            let p = Path::new(input_path);
-            if !p.exists() || p.is_dir() {
-                error!("Invalid input path, please provide a file path to a GRP file");
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
-            }
+            require_existing_file(input_path)?;
 
             analyse_grp(&args)?;
             info!("Analysis complete in {} ms", time_elapsed(start_time));
         },
+    }
+    Ok(())
+}
+
+fn validate_value_dependencies(args: &Args) {
+    let mut cmd = Args::command();
+    if args.mode.as_ref() == Some(&OperationMode::PngToGrp) && args.frame_number.is_some() {
+        cmd.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "the argument '--frame-number' cannot be used with '--mode png-to-grp'",
+        ).exit();
+    }
+    if args.mode.as_ref() != Some(&OperationMode::AnalyseGrp) && args.analyse_row_number.is_some() {
+        cmd.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "the argument '--analyse-row-number' can only be used with '--mode analyse-grp'",
+        ).exit();
+    }
+}
+
+fn require_existing_file(path: &str) -> std::io::Result<()> {
+    let p = Path::new(path);
+    if !p.exists() || p.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("'--input-path' value '{}' is not an existing file", path),
+        ));
     }
     Ok(())
 }

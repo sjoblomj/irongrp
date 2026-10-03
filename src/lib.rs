@@ -4,19 +4,17 @@ use simplelog::LevelFilter;
 use std::fmt;
 use std::fs;
 use std::io::{Error, ErrorKind};
-use std::sync::OnceLock;
 
 pub mod analyse;
 pub mod grp;
 pub mod png;
 
-pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Path to the GRP file, or directory containing PNG files
-    #[arg(long, short='i', value_hint = ValueHint::AnyPath)]
+    #[arg(long, short='i', value_hint = ValueHint::AnyPath,
+          required_unless_present = "generator")]
     pub input_path: Option<String>,
 
     /// Path to the palette file.
@@ -25,11 +23,12 @@ pub struct Args {
 
     /// Output directory if input is a GRP file,
     /// or output file if input is a directory
-    #[arg(long, short='o', value_hint = ValueHint::AnyPath)]
+    #[arg(long, short='o', value_hint = ValueHint::AnyPath,
+          required_if_eq_any = [("mode", "grp-to-png"), ("mode", "png-to-grp")])]
     pub output_path: Option<String>,
 
     /// Mode of operation.
-    #[arg(long, short='m', value_enum)]
+    #[arg(long, short='m', value_enum, required_unless_present = "generator")]
     pub mode: Option<OperationMode>,
 
     /// Compression type to use when creating GRP files.
@@ -49,19 +48,19 @@ pub struct Args {
     /// Maximum width in pixels of the output tiled image.
     /// If this is less than the maximum frame width of
     /// the GRP itself, this value will be ignored.
-    #[arg(long)]
+    #[arg(long, requires = "tiled")]
     pub max_width: Option<u32>,
 
     /// Only outputs or analyses the given frame number.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "tiled")]
     pub frame_number: Option<u16>,
 
     /// Output the data of the given row number for the given frame.
-    #[arg(long)]
+    #[arg(long, requires = "frame_number")]
     pub analyse_row_number: Option<u8>,
 
-    /// Enable transparency in the PNG images. Default
-    /// behavior is to use index 0 in the palette.
+    /// Enable transparency in the PNG images. The default
+    /// behaviour is to use index 0 in the palette.
     #[arg(long)]
     pub use_transparency: bool,
 
