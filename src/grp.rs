@@ -747,6 +747,11 @@ fn png_to_grpframe(
 
     } else {
         let extended_width = image_should_be_extended(image.width);
+        if  extended_width && compression == &CompressionType::War1 {
+            return Err(Error::CannotEncode(format!(
+                "Width ({}) is above limit of {} for compression type {}", image.width, u8::MAX, compression,
+            )))
+        }
         if  extended_width {
             let (w, o) = adjust_width_and_offset_if_extended_when_encoding(image.width, offset);
             debug!(
@@ -788,7 +793,11 @@ fn files_to_grp(
 
     for (index, png_file) in png_files.iter().enumerate() {
         let image = png_to_pixels(png_file.as_str(), palette).in_file(png_file)?;
+        validate_war1_frame_size(compression_type, &image).in_file(png_file)?;
         let reuse_key = make_frame_reuse_key(&compression_type, &image);
+
+        max_width  = std::cmp::max(max_width,  image.original_width);
+        max_height = std::cmp::max(max_height, image.original_height);
 
         if let Some(&existing_index) = seen_frames.get(&reuse_key) {
             let reused: GrpFrame = grp_frames[existing_index].clone();
@@ -804,8 +813,6 @@ fn files_to_grp(
             });
 
         } else {
-            let orig_width  = image.original_width;
-            let orig_height = image.original_height;
             let grp_frame = png_to_grpframe(image, image_data_offset, &compression_type).in_file(png_file)?;
 
             image_data_offset += grp_frame.grp_frame_len() as u32;
@@ -814,17 +821,9 @@ fn files_to_grp(
                     "The image data offset is already too big to add more frames".to_string(),
                 )).in_file(png_file);
             }
-            validate_war1_frame_extent(
-                compression_type,
-                grp_frame.width,  grp_frame.x_offset,
-                grp_frame.height, grp_frame.y_offset,
-            ).in_file(png_file)?;
 
             seen_frames.insert(reuse_key, grp_frames.len());
             grp_frames.push(grp_frame);
-
-            max_width  = std::cmp::max(max_width,  orig_width);
-            max_height = std::cmp::max(max_height, orig_height);
         }
     }
 
@@ -839,27 +838,25 @@ fn get_header_size(war1_style: bool) -> usize {
     }
 }
 
-/// For War1 GRPs, the header stores `max_width` and `max_height` as single bytes, so the extent
-/// of every frame (offset + size) must fit in a u8. Other compression types use u16 in the
-/// header and impose no such restriction here.
-fn validate_war1_frame_extent(
+/// For War1 GRPs, the header stores `max_width` and `max_height` as single bytes, and the frames
+/// cannot use the extended width of Uncompressed GRPs. Hence the canvas size of the PNG, and the
+/// extent of the frame within it (offset + size), must fit in a u8. Other compression types use
+/// u16 in the header and impose no such restriction here.
+fn validate_war1_frame_size(
     compression_type: &CompressionType,
-    width:  u8, x_offset: u8,
-    height: u8, y_offset: u8,
+    image: &PalettizedImageWithMetadata<u8, u16>,
 ) -> Result<()> {
     if *compression_type != CompressionType::War1 {
         return Ok(());
     }
-    let right  = width  as u16 + x_offset as u16;
-    let bottom = height as u16 + y_offset as u16;
-    if right > u8::MAX as u16 || bottom > u8::MAX as u16 {
+    let max    = u8::MAX as u16;
+    let right  = image.width  + image.x_offset as u16;
+    let bottom = image.height + image.y_offset as u16;
+    if right > max || bottom > max || image.original_width > max || image.original_height > max {
         return Err(Error::CannotEncode(format!(
-            "For compression type {}: \
-            width ({}) added to x-offset ({}) is {} and must be below {}, or \
-            height ({}) added to y-offset ({}) is {} and must be below {}. \
-            Try making the number of rows and columns of all-transparent pixels fewer.",
-            compression_type, width,  x_offset, right,  u8::MAX,
-            height, y_offset, bottom, u8::MAX,
+            "For compression type {}, the image size must be at most {}x{}, but it is {}x{}. \
+            The non-transparent part of the image extends to x = {} and y = {}.",
+            compression_type, max, max, image.original_width, image.original_height, right, bottom,
         )));
     }
     Ok(())
@@ -1683,41 +1680,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn war1_extent_accepts_frame_within_bounds() {
-        // Sum is well below u8::MAX
-        assert!(validate_war1_frame_extent(&CompressionType::War1, 100, 50, 80, 60).is_ok());
+    /// An image of the given size at the given offset, on a canvas of the given size
+    fn test_image(offset: (u8, u8), size: (u16, u16), canvas: (u16, u16)) -> PalettizedImageWithMetadata<u8, u16> {
+        PalettizedImageWithMetadata::new(
+            palpngrs::Offset::new(offset.0, offset.1),
+            palpngrs::Size::new(size.0, size.1),
+            palpngrs::Size::new(canvas.0, canvas.1),
+            vec![1; size.0 as usize * size.1 as usize],
+        )
     }
 
     #[test]
-    fn war1_extent_accepts_frame_exactly_at_boundary() {
-        // width + x_offset == u8::MAX (255), height + y_offset == u8::MAX (255).
-        // The check rejects only when the sum is strictly greater than u8::MAX.
-        assert!(validate_war1_frame_extent(&CompressionType::War1, 200, 55, 150, 105).is_ok());
+    fn war1_size_accepts_frame_within_bounds() {
+        let image = test_image((50, 60), (100, 80), (200, 200));
+        assert!(validate_war1_frame_size(&CompressionType::War1, &image).is_ok());
     }
 
     #[test]
-    fn war1_extent_rejects_width_overflow() {
+    fn war1_size_accepts_frame_exactly_at_boundary() {
+        // width + x_offset == height + y_offset == canvas width == canvas height == u8::MAX (255).
+        // The check rejects only when a value is strictly greater than u8::MAX.
+        let image = test_image((55, 105), (200, 150), (255, 255));
+        assert!(validate_war1_frame_size(&CompressionType::War1, &image).is_ok());
+    }
+
+    #[test]
+    fn war1_size_rejects_width_overflow() {
         // 200 + 56 = 256 > 255
-        let err = validate_war1_frame_extent(&CompressionType::War1, 200, 56, 10, 10)
-            .expect_err("expected width-extent rejection");
+        let image = test_image((56, 10), (200, 10), (256, 255));
+        let err = validate_war1_frame_size(&CompressionType::War1, &image)
+            .expect_err("expected width rejection");
         assert!(matches!(err, Error::CannotEncode(_)));
-        assert!(err.to_string().contains("256"));
+        assert!(err.to_string().contains("x = 256"));
     }
 
     #[test]
-    fn war1_extent_rejects_height_overflow() {
+    fn war1_size_rejects_height_overflow() {
         // 150 + 200 = 350 > 255
-        let err = validate_war1_frame_extent(&CompressionType::War1, 10, 10, 150, 200)
-            .expect_err("expected height-extent rejection");
+        let image = test_image((10, 200), (10, 150), (255, 350));
+        let err = validate_war1_frame_size(&CompressionType::War1, &image)
+            .expect_err("expected height rejection");
         assert!(matches!(err, Error::CannotEncode(_)));
-        assert!(err.to_string().contains("350"));
+        assert!(err.to_string().contains("y = 350"));
     }
 
     #[test]
-    fn war1_extent_ignored_for_non_war1_compression_types() {
+    fn war1_size_rejects_frame_wider_than_u8() {
+        // Allowed for Extended Uncompressed GRPs, but War1 GRPs have no extended width
+        let image = test_image((0, 0), (300, 10), (300, 10));
+        let err = validate_war1_frame_size(&CompressionType::War1, &image)
+            .expect_err("expected width rejection");
+        assert!(matches!(err, Error::CannotEncode(_)));
+    }
+
+    #[test]
+    fn war1_size_rejects_canvas_larger_than_u8_even_if_frame_fits() {
+        // The canvas size becomes max_width and max_height of the header, which are single bytes
+        for canvas in [(256, 10), (10, 256)] {
+            let image = test_image((0, 0), (10, 10), canvas);
+            let err = validate_war1_frame_size(&CompressionType::War1, &image)
+                .expect_err("expected canvas rejection");
+            assert!(matches!(err, Error::CannotEncode(_)), "for canvas {:?}", canvas);
+        }
+    }
+
+    #[test]
+    fn war1_size_ignored_for_non_war1_compression_types() {
         // Same dimensions that fail for War1 must pass for all other compressions,
         // because their headers store max_width and max_height as u16.
+        let image = test_image((56, 200), (300, 150), (400, 400));
         for compression in [
             CompressionType::Normal,
             CompressionType::Optimised,
@@ -1725,11 +1756,62 @@ mod tests {
             CompressionType::Auto,
         ] {
             assert!(
-                validate_war1_frame_extent(&compression, 200, 56, 150, 200).is_ok(),
-                "compression {:?} should not enforce the War1 extent check",
+                validate_war1_frame_size(&compression, &image).is_ok(),
+                "compression {:?} should not enforce the War1 size check",
                 compression,
             );
         }
+    }
+
+    #[test]
+    fn png_to_grpframe_rejects_extended_width_for_war1() {
+        let image = test_image((0, 0), (300, 10), (300, 10));
+        let result = png_to_grpframe(image, 12, &CompressionType::War1);
+        assert!(matches!(result, Err(Error::CannotEncode(_))));
+    }
+
+    #[test]
+    fn files_to_grp_rejects_war1_png_wider_than_u8() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("war1_frame_000.png").to_str().unwrap().to_string();
+        create_test_png(&file, [9, 9, 9], 300, 10);
+
+        let err = files_to_grp(vec![file.clone()], &palette, &CompressionType::War1)
+            .expect_err("expected a 300 pixel wide War1 frame to be rejected");
+        assert!(matches!(err.root(), Error::CannotEncode(_)));
+        assert!(err.to_string().starts_with(&file));
+    }
+
+    #[test]
+    fn files_to_grp_rejects_war1_png_with_canvas_wider_than_u8() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("war1_frame_000.png").to_str().unwrap().to_string();
+        // A 10x10 frame in the corner of a 300x10 canvas
+        create_test_png_with_rect(&file, (300, 10), (0, 0, 10, 10), [9, 9, 9]);
+
+        let err = files_to_grp(vec![file.clone()], &palette, &CompressionType::War1)
+            .expect_err("expected a War1 canvas wider than 255 to be rejected");
+        assert!(matches!(err.root(), Error::CannotEncode(_)));
+    }
+
+    #[test]
+    fn files_to_grp_max_dimensions_include_reused_frames() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_a = temp_dir.path().join("frame_000.png").to_str().unwrap().to_string();
+        let file_b = temp_dir.path().join("frame_001.png").to_str().unwrap().to_string();
+        // Identical frames, but the second is on a larger canvas
+        create_test_png_with_rect(&file_a, (8, 8),   (1, 1, 2, 2), [9, 9, 9]);
+        create_test_png_with_rect(&file_b, (12, 10), (1, 1, 2, 2), [9, 9, 9]);
+
+        let (frames, max_width, max_height) = files_to_grp(
+            vec![file_a, file_b], &palette, &CompressionType::Normal,
+        ).unwrap();
+
+        assert_eq!(frames[0].image_data_offset, frames[1].image_data_offset, "expected the frame to be reused");
+        assert_eq!((max_width, max_height), (12, 10));
     }
 
     #[test]

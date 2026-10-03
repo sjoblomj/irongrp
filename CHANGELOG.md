@@ -27,6 +27,8 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where two PNGs with the same pixel data but different dimensions (e.g. a 2x3 and a 3x2 frame of the same colour) were treated as identical when creating a Normal GRP, so the second frame got the dimensions of the first.
 - Frames are now only reused when creating a GRP if their data is actually identical, rather than when a 64-bit hash of it matches. The reports of identical frames in `grp-to-png` and `analyse-grp` likewise compare the frames themselves, are listed in frame order, and `analyse-grp` no longer reports frames with the same pixels but different dimensions as identical.
 - Corrected bug where `analyse-grp` failed with "failed to fill whole buffer" on Extended Uncompressed GRPs, since the extended bit in the image data offset was treated as part of the offset. The printed image data offsets of such frames are now also correct.
+- Corrected bug where creating a WarCraft I style GRP from a PNG wider than 255 pixels gave a broken GRP, with a truncated width in the header and an extended frame width that WarCraft I GRPs do not support. Such PNGs, and PNGs whose canvas is larger than 255x255, are now rejected with an error.
+- The max width and height in the header of a created GRP now also take into account the canvas size of frames that reuse the image data of an earlier frame.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
