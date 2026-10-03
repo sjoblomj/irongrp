@@ -786,18 +786,11 @@ fn files_to_grp(
                     "The image data offset is already too big to add more GRPs!",
                 ));
             }
-            if *compression_type == CompressionType::War1 &&
-                (grp_frame.width  as u16 + grp_frame.x_offset as u16) > u8::MAX as u16 ||
-                (grp_frame.height as u16 + grp_frame.y_offset as u16) > u8::MAX as u16 {
-                return Err(Error::new(ErrorKind::InvalidInput, format!(
-                    "For compression type {}: \
-                    width ({}) added to x-offset ({}) is {} and must be below {}, or \
-                    height ({}) added to y-offset ({}) is {} and must be below {}. \
-                    Try making the number of rows and columns of all-transparent pixels fewer.",
-                    compression_type, grp_frame.width, grp_frame.x_offset, grp_frame.width + grp_frame.x_offset, u8::MAX,
-                    grp_frame.height, grp_frame.y_offset, grp_frame.height + grp_frame.y_offset, u8::MAX,
-                )));
-            }
+            validate_war1_frame_extent(
+                compression_type,
+                grp_frame.width,  grp_frame.x_offset,
+                grp_frame.height, grp_frame.y_offset,
+            )?;
 
             seen_frames.insert(reuse_key, grp_frames.len());
             grp_frames.push(grp_frame);
@@ -816,6 +809,32 @@ fn get_header_size(war1_style: bool) -> usize {
     } else {
         6
     }
+}
+
+/// For War1 GRPs, the header stores `max_width` and `max_height` as single bytes, so the extent
+/// of every frame (offset + size) must fit in a u8. Other compression types use u16 in the
+/// header and impose no such restriction here.
+fn validate_war1_frame_extent(
+    compression_type: &CompressionType,
+    width:  u8, x_offset: u8,
+    height: u8, y_offset: u8,
+) -> Result<()> {
+    if *compression_type != CompressionType::War1 {
+        return Ok(());
+    }
+    let right  = width  as u16 + x_offset as u16;
+    let bottom = height as u16 + y_offset as u16;
+    if right > u8::MAX as u16 || bottom > u8::MAX as u16 {
+        return Err(Error::new(ErrorKind::InvalidInput, format!(
+            "For compression type {}: \
+            width ({}) added to x-offset ({}) is {} and must be below {}, or \
+            height ({}) added to y-offset ({}) is {} and must be below {}. \
+            Try making the number of rows and columns of all-transparent pixels fewer.",
+            compression_type, width,  x_offset, right,  u8::MAX,
+            height, y_offset, bottom, u8::MAX,
+        )));
+    }
+    Ok(())
 }
 
 fn determine_compression_type(png_files: &Vec<String>, compression_type: &CompressionType) -> CompressionType {
@@ -1413,6 +1432,56 @@ mod tests {
 
         fs::remove_dir_all(temp_dir).unwrap();
     }
+
+    #[test]
+    fn war1_extent_accepts_frame_within_bounds() {
+        // Sum is well below u8::MAX
+        assert!(validate_war1_frame_extent(&CompressionType::War1, 100, 50, 80, 60).is_ok());
+    }
+
+    #[test]
+    fn war1_extent_accepts_frame_exactly_at_boundary() {
+        // width + x_offset == u8::MAX (255), height + y_offset == u8::MAX (255).
+        // The check rejects only when the sum is strictly greater than u8::MAX.
+        assert!(validate_war1_frame_extent(&CompressionType::War1, 200, 55, 150, 105).is_ok());
+    }
+
+    #[test]
+    fn war1_extent_rejects_width_overflow() {
+        // 200 + 56 = 256 > 255
+        let err = validate_war1_frame_extent(&CompressionType::War1, 200, 56, 10, 10)
+            .expect_err("expected width-extent rejection");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("256"));
+    }
+
+    #[test]
+    fn war1_extent_rejects_height_overflow() {
+        // 150 + 200 = 350 > 255
+        let err = validate_war1_frame_extent(&CompressionType::War1, 10, 10, 150, 200)
+            .expect_err("expected height-extent rejection");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("350"));
+    }
+
+    #[test]
+    fn war1_extent_ignored_for_non_war1_compression_types() {
+        // Same dimensions that fail for War1 must pass for all other compressions,
+        // because their headers store max_width and max_height as u16.
+        for compression in [
+            CompressionType::Normal,
+            CompressionType::Optimised,
+            CompressionType::Uncompressed,
+            CompressionType::Auto,
+        ] {
+            assert!(
+                validate_war1_frame_extent(&compression, 200, 56, 150, 200).is_ok(),
+                "compression {:?} should not enforce the War1 extent check",
+                compression,
+            );
+        }
+    }
+
 
     fn perform_row_tests(test_cases: Vec<Vec<u8>>) {
         for row in test_cases {

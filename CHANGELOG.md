@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.
 - Corrected bug where the file layout diagram would not be printed.
+- Corrected bug related to boundary checks for Warcraft I style GRPs.
 
 
 
