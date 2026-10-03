@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.
 - Corrected bug where the file layout diagram would not be printed.
 - Corrected bug related to boundary checks for Warcraft I style GRPs.
+- Fix off-by-one in the PNG width check that rejected 511-pixel-wide images, the actual maximum for extended uncompressed GRPs.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

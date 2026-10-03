@@ -170,10 +170,13 @@ pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Re
     debug!(""); // Give some space in the logs
     let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true)?;
 
-    if png.width as u32 > 2 * (u8::MAX as u32) || png.height as u32 > u8::MAX as u32 {
+    // UncompressedExtended GRPs store width as `actual_width - EXTENDED_IMAGE_WIDTH` in a u8,
+    // so the maximum representable width is EXTENDED_IMAGE_WIDTH + u8::MAX (= 511).
+    let max_width = EXTENDED_IMAGE_WIDTH as u32 + u8::MAX as u32;
+    if png.width as u32 > max_width || png.height as u32 > u8::MAX as u32 {
         return Err(std::io::Error::new(ErrorKind::InvalidInput, format!(
             "Width ({}) is above limit of {}, or height ({}) is above limit of {}",
-            png.width, 2 * (u8::MAX as u32), png.height, u8::MAX,
+            png.width, max_width, png.height, u8::MAX,
         )))
     }
     Ok(png)
