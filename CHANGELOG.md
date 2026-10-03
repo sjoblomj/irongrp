@@ -8,7 +8,10 @@ All notable changes to this project will be documented in this file.
 - Ability to specify and load palettes (up to 9) in the yazi integration.
 
 ### Changed
+
+### Bug fixes
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.
+- Corrected bug where the file layout diagram would not be printed.
 
 
 

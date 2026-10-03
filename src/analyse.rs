@@ -1,5 +1,5 @@
 use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{Args, LogLevel, LOG_LEVEL};
+use crate::Args;
 use log::{debug, error, info, warn};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -245,7 +245,7 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     println!();
 
 
-    if matches!(LOG_LEVEL.get(), Some(LogLevel::Debug)) {
+    if log::log_enabled!(log::Level::Debug) {
         debug!("File layout diagram:");
         let mut pos = 0;
         for (start, end, label) in used_ranges {
