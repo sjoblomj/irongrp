@@ -978,7 +978,6 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::fs;
 
     fn create_test_png(path: &str, colour: [u8; 3], width: u32, height: u32) {
         use image::{Rgb, RgbImage};
@@ -1373,12 +1372,12 @@ mod tests {
     #[test]
     fn detects_duplicate_frames() {
         let palette = greyscale_palette().unwrap();
-        let temp_dir = "temp_test_output";
-        fs::create_dir_all(temp_dir).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
 
-        let file1 = format!("{}/frame1.png", temp_dir);
-        let file2 = format!("{}/frame2.png", temp_dir);
-        let file3 = format!("{}/frame3.png", temp_dir);
+        let file1 = dir.join("frame1.png").to_str().unwrap().to_string();
+        let file2 = dir.join("frame2.png").to_str().unwrap().to_string();
+        let file3 = dir.join("frame3.png").to_str().unwrap().to_string();
 
         create_test_png(&file1, [71, 71, 71], 16, 16);
         create_test_png(&file2, [42, 42, 42], 16, 16);
@@ -1402,18 +1401,16 @@ mod tests {
             frames[2].image_data_offset,
             "Duplicate frames should be identical"
         );
-
-        fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
     fn does_not_deduplicate_different_frames() {
         let palette = greyscale_palette().unwrap();
-        let temp_dir = "temp_test_output2";
-        fs::create_dir_all(temp_dir).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
 
-        let file_a = format!("{}/frameA.png", temp_dir);
-        let file_b = format!("{}/frameB.png", temp_dir);
+        let file_a = dir.join("frameA.png").to_str().unwrap().to_string();
+        let file_b = dir.join("frameB.png").to_str().unwrap().to_string();
 
         create_test_png(&file_a, [10, 10, 10], 16, 16);
         create_test_png(&file_b, [11, 11, 11], 16, 16);
@@ -1431,8 +1428,6 @@ mod tests {
             frames[1].image_data_offset,
             "Different frames should not share the same image_data_offset"
         );
-
-        fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]

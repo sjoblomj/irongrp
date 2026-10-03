@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - Ability to specify and load palettes (up to 9) in the yazi integration.
+- Using `tempfile` for tests for added robustness.
 
 ### Changed
 - Better handling of argument validation by using clap.

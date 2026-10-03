@@ -186,7 +186,6 @@ mod tests {
     use crate::grp::ImageData;
     use crate::{CompressionType, LogLevel};
     use palpngrs::greyscale_palette;
-    use std::fs;
     use std::path::Path;
 
     fn make_test_frame(pixel_value: u8, width: u8, height: u8) -> GrpFrame {
@@ -224,8 +223,8 @@ mod tests {
 
     #[test]
     fn saves_all_frames_when_no_frame_number_given() {
-        let temp_dir = "temp_test_render_all";
-        fs::create_dir_all(temp_dir).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
         let palette = greyscale_palette().unwrap();
 
         let frames = vec![
@@ -233,22 +232,20 @@ mod tests {
             make_test_frame(20, 4, 4),
             make_test_frame(30, 4, 4),
         ];
-        let args = make_test_args(temp_dir, None);
+        let args = make_test_args(dir, None);
 
         render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
 
         for i in 0..frames.len() {
-            let path = format!("{}/frame_{:03}.png", temp_dir, i);
+            let path = format!("{}/frame_{:03}.png", dir, i);
             assert!(Path::new(&path).exists(), "Expected {} to exist", path);
         }
-
-        fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
     fn saves_only_requested_frame_when_frame_number_given() {
-        let temp_dir = "temp_test_render_single";
-        fs::create_dir_all(temp_dir).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
         let palette = greyscale_palette().unwrap();
 
         let frames = vec![
@@ -256,14 +253,12 @@ mod tests {
             make_test_frame(20, 4, 4),
             make_test_frame(30, 4, 4),
         ];
-        let args = make_test_args(temp_dir, Some(1));
+        let args = make_test_args(dir, Some(1));
 
         render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
 
-        assert!(!Path::new(&format!("{}/frame_000.png", temp_dir)).exists());
-        assert!( Path::new(&format!("{}/frame_001.png", temp_dir)).exists());
-        assert!(!Path::new(&format!("{}/frame_002.png", temp_dir)).exists());
-
-        fs::remove_dir_all(temp_dir).unwrap();
+        assert!(!Path::new(&format!("{}/frame_000.png", dir)).exists());
+        assert!( Path::new(&format!("{}/frame_001.png", dir)).exists());
+        assert!(!Path::new(&format!("{}/frame_002.png", dir)).exists());
     }
 }
