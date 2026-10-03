@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6] - unreleased
+
+### Added
+- Ability to specify and load palettes (up to 9) in the yazi integration.
+
+
+
 ## [0.5] - 2025-06-19
 
 ### Added
