@@ -51,10 +51,10 @@ pub enum GrpType {
 #[derive(Hash, Eq, PartialEq)]
 struct FrameDedupKey {
     image_data: Vec<u8>,
-    x_offset: u8,
-    y_offset: u8,
-    width:    u16,
-    height:   u16,
+    width:      u16,
+    height:     u16,
+    /// (x_offset, y_offset), only included for compression types where they matter for reuse
+    offsets:    Option<(u8, u8)>,
 }
 
 impl GrpFrame {
@@ -877,29 +877,23 @@ fn determine_compression_type(png_files: &[String], compression_type: &Compressi
 
 /// Make a hash of the data that is relevant for determining whether to reuse a frame or not
 fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedImageWithMetadata<u8, u16>) -> u64 {
-    if (*compression_type == CompressionType::Normal) || (*compression_type == CompressionType::Optimised) {
-        // For normal GRPs, we reference a previous frame if the current image data
-        // is identical to a frame we've already seen.
-        let mut hasher = DefaultHasher::new();
-        image.palettized_image.hash(&mut hasher);
-        hasher.finish()
+    // For normal GRPs, we reference a previous frame if the current image data and its
+    // dimensions are identical to a frame we've already seen. The dimensions are needed since
+    // e.g. a 2x3 and a 3x2 frame of the same colour have identical image data.
+    // For uncompressed GRPs, the x and y offsets must also be identical.
+    let include_offsets = *compression_type != CompressionType::Normal
+        && *compression_type != CompressionType::Optimised;
 
-    } else {
-        // For uncompressed GRPs, we reference a previous frame if both the
-        // current image data, and the metadata (x and y offsets, width, height)
-        // is identical to a frame we've already seen.
-        let key = FrameDedupKey {
-            image_data: image.palettized_image.clone(),
-            x_offset:   image.x_offset,
-            y_offset:   image.y_offset,
-            width:      image.width,
-            height:     image.height,
-        };
+    let key = FrameDedupKey {
+        image_data: image.palettized_image.clone(),
+        width:      image.width,
+        height:     image.height,
+        offsets:    include_offsets.then_some((image.x_offset, image.y_offset)),
+    };
 
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        hasher.finish()
-    }
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Detects whether the given GRP is uncompressed (unusual) or not (normal).
@@ -1536,6 +1530,99 @@ mod tests {
             frames[1].image_data_offset,
             "Different frames should not share the same image_data_offset"
         );
+    }
+
+    /// Creates a PNG on a canvas of palette index 0 (transparent when read back), with a
+    /// rectangle of the given colour at the given position.
+    fn create_test_png_with_rect(path: &str, canvas: (u32, u32), rect: (u32, u32, u32, u32), colour: [u8; 3]) {
+        let (rx, ry, rw, rh) = rect;
+        let img = image::RgbImage::from_fn(canvas.0, canvas.1, |x, y| {
+            if x >= rx && x < rx + rw && y >= ry && y < ry + rh {
+                image::Rgb(colour)
+            } else {
+                image::Rgb([0, 0, 0])
+            }
+        });
+        img.save(path).expect("Failed to save test PNG");
+    }
+
+    #[test]
+    fn does_not_deduplicate_frames_with_same_pixels_but_different_dimensions() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_a = temp_dir.path().join("frame_000.png").to_str().unwrap().to_string();
+        let file_b = temp_dir.path().join("frame_001.png").to_str().unwrap().to_string();
+
+        // Both have the image data [5, 5, 5, 5, 5, 5]
+        create_test_png(&file_a, [5, 5, 5], 2, 3);
+        create_test_png(&file_b, [5, 5, 5], 3, 2);
+
+        for compression_type in [
+            CompressionType::Normal, CompressionType::Optimised,
+            CompressionType::Uncompressed, CompressionType::War1,
+        ] {
+            let (frames, _, _) = files_to_grp(
+                vec![file_a.clone(), file_b.clone()], &palette, &compression_type,
+            ).unwrap();
+
+            assert_ne!(frames[0].image_data_offset, frames[1].image_data_offset, "for {}", compression_type);
+            assert_eq!((frames[0].width, frames[0].height), (2, 3), "for {}", compression_type);
+            assert_eq!((frames[1].width, frames[1].height), (3, 2), "for {}", compression_type);
+        }
+    }
+
+    #[test]
+    fn frames_with_same_pixels_but_different_dimensions_survive_grp_roundtrip() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_a = temp_dir.path().join("frame_000.png").to_str().unwrap().to_string();
+        let file_b = temp_dir.path().join("frame_001.png").to_str().unwrap().to_string();
+        let grp_path = temp_dir.path().join("out.grp").to_str().unwrap().to_string();
+
+        create_test_png(&file_a, [5, 5, 5], 2, 3);
+        create_test_png(&file_b, [5, 5, 5], 3, 2);
+
+        let compression_type = CompressionType::Normal;
+        let (frames, max_width, max_height) = files_to_grp(
+            vec![file_a, file_b], &palette, &compression_type,
+        ).unwrap();
+        let header = create_grp_header(&frames, max_width, max_height);
+        write_grp_file(&grp_path, &header, &frames, &compression_type).unwrap();
+
+        let (_, _, read_frames) = read_grp_file(&grp_path).unwrap();
+        assert_eq!(read_frames.len(), 2);
+        assert_eq!((read_frames[0].width, read_frames[0].height), (2, 3));
+        assert_eq!((read_frames[1].width, read_frames[1].height), (3, 2));
+        assert_eq!(read_frames[0].image_data.converted_pixels, vec![5; 6]);
+        assert_eq!(read_frames[1].image_data.converted_pixels, vec![5; 6]);
+    }
+
+    #[test]
+    fn reuses_frames_at_different_offsets_only_for_normal_grps() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_a = temp_dir.path().join("frame_000.png").to_str().unwrap().to_string();
+        let file_b = temp_dir.path().join("frame_001.png").to_str().unwrap().to_string();
+
+        // Same 2x2 image, placed at different positions on the canvas
+        create_test_png_with_rect(&file_a, (8, 8), (1, 1, 2, 2), [9, 9, 9]);
+        create_test_png_with_rect(&file_b, (8, 8), (4, 5, 2, 2), [9, 9, 9]);
+
+        for (compression_type, should_reuse) in [
+            (CompressionType::Normal,       true),
+            (CompressionType::Optimised,    true),
+            (CompressionType::Uncompressed, false),
+            (CompressionType::War1,         false),
+        ] {
+            let (frames, _, _) = files_to_grp(
+                vec![file_a.clone(), file_b.clone()], &palette, &compression_type,
+            ).unwrap();
+
+            let reused = frames[0].image_data_offset == frames[1].image_data_offset;
+            assert_eq!(reused, should_reuse, "for {}", compression_type);
+            assert_eq!((frames[0].x_offset, frames[0].y_offset), (1, 1), "for {}", compression_type);
+            assert_eq!((frames[1].x_offset, frames[1].y_offset), (4, 5), "for {}", compression_type);
+        }
     }
 
     #[test]

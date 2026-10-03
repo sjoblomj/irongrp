@@ -24,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Fix off-by-one in the PNG width check that rejected 511-pixel-wide images, the actual maximum for extended uncompressed GRPs.
 - Corrected crash when analysing a frame number equal to the number of frames, and a row number equal to the frame height is now rejected instead of silently ignored.
 - Corrected crash (or, in release builds, a silently corrupt GRP) when converting a large PNG that compresses poorly, such as a 255x255 frame with no repeated pixels. Such frames are now rejected with an error, since their row offsets do not fit in the GRP format.
+- Corrected bug where two PNGs with the same pixel data but different dimensions (e.g. a 2x3 and a 3x2 frame of the same colour) were treated as identical when creating a Normal GRP, so the second frame got the dimensions of the first.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
