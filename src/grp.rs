@@ -844,9 +844,20 @@ fn determine_compression_type(png_files: &Vec<String>, compression_type: &Compre
     let compression = if *compression_type != CompressionType::Auto {
         compression_type.clone()
     } else {
-        if png_files.iter().any(|p| p.contains(&format!("{}_", UNCOMPRESSED_FILENAME))) {
+        // Only inspect the file name component, so an ancestor directory like
+        // `/home/me/war1_sprites/` cannot force a compression type.
+        let any_file_name_contains = |needle: &str| -> bool {
+            png_files.iter().any(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(needle))
+                    .unwrap_or(false)
+            })
+        };
+        if        any_file_name_contains(&format!("{}_", UNCOMPRESSED_FILENAME)) {
             CompressionType::Uncompressed
-        } else if png_files.iter().any(|p| p.contains(&format!("{}_", WAR1_FILENAME))) {
+        } else if any_file_name_contains(&format!("{}_", WAR1_FILENAME)) {
             CompressionType::War1
         } else {
             CompressionType::Normal
@@ -1477,6 +1488,63 @@ mod tests {
                 compression,
             );
         }
+    }
+
+    #[test]
+    fn determine_compression_type_returns_explicit_choice_unchanged() {
+        let files = vec!["frame_000.png".to_string()];
+        for explicit in [
+            CompressionType::Normal,
+            CompressionType::Optimised,
+            CompressionType::Uncompressed,
+            CompressionType::War1,
+        ] {
+            assert_eq!(determine_compression_type(&files, &explicit), explicit);
+        }
+    }
+
+    #[test]
+    fn determine_compression_type_detects_war1_prefix_in_file_name() {
+        let files = vec!["sprites/war1_frame_000.png".to_string()];
+        assert_eq!(
+            determine_compression_type(&files, &CompressionType::Auto),
+            CompressionType::War1,
+        );
+    }
+
+    #[test]
+    fn determine_compression_type_detects_uncompressed_prefix_in_file_name() {
+        let files = vec!["sprites/uncompressed_frame_000.png".to_string()];
+        assert_eq!(
+            determine_compression_type(&files, &CompressionType::Auto),
+            CompressionType::Uncompressed,
+        );
+    }
+
+    #[test]
+    fn determine_compression_type_defaults_to_normal_for_plain_file_names() {
+        let files = vec!["sprites/frame_000.png".to_string()];
+        assert_eq!(
+            determine_compression_type(&files, &CompressionType::Auto),
+            CompressionType::Normal,
+        );
+    }
+
+    #[test]
+    fn determine_compression_type_ignores_match_in_ancestor_directory() {
+        // Regression test: a directory named war1_sprites or uncompressed_dumps
+        // must not force a compression type when the file names themselves are plain.
+        let war1_dir = vec!["/home/me/war1_sprites/frame_000.png".to_string()];
+        assert_eq!(
+            determine_compression_type(&war1_dir, &CompressionType::Auto),
+            CompressionType::Normal,
+        );
+
+        let uncompressed_dir = vec!["/home/me/uncompressed_dumps/frame_000.png".to_string()];
+        assert_eq!(
+            determine_compression_type(&uncompressed_dir, &CompressionType::Auto),
+            CompressionType::Normal,
+        );
     }
 
 
