@@ -13,12 +13,15 @@ All notable changes to this project will be documented in this file.
 - Reuse the open file handle in `detect_uncompressed` instead of reopening the GRP a second time.
 - Restrict the auto-detect for War1 and Uncompressed to the PNG file names, so a parent directory named like `war1_sprites/` no longer changes the chosen format.
 - Updated `palpngrs` to 0.3.0.
+- Errors are now reported as a single readable log line naming the file involved, instead of a Rust debug dump, and the program exits with status 1. Internally, the crate uses its own `irongrp::Error` type instead of `std::io::Error`.
+- Converting a directory without any PNGs to a GRP is now an error, instead of silently writing an empty GRP.
 
 ### Bug fixes
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.
 - Corrected bug where the file layout diagram would not be printed.
 - Corrected bug related to boundary checks for Warcraft I style GRPs.
 - Fix off-by-one in the PNG width check that rejected 511-pixel-wide images, the actual maximum for extended uncompressed GRPs.
+- Corrected crash when analysing a frame number equal to the number of frames, and a row number equal to the frame height is now rejected instead of silently ignored.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

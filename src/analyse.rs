@@ -1,6 +1,7 @@
-use crate::grp::{detect_uncompressed, read_grp_frames, read_grp_header, GrpType, EXTENDED_IMAGE_WIDTH};
+use crate::error::{Error, InFile, Result};
+use crate::grp::{read_grp_file, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::Args;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::File;
@@ -9,40 +10,39 @@ use std::io::{Read, Seek, SeekFrom};
 
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
 /// ranges, and file layout.
-pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
-    let input_path = &args.input_path.clone().unwrap();
-    let mut file = File::open(input_path)?;
-    let file_len = file.metadata()?.len();
+pub fn analyse_grp(args: &Args) -> Result<()> {
+    let input_path = args.input_path.as_deref().unwrap();
+    let (header, grp_type, frames) = read_grp_file(input_path)?;
+    let is_uncompressed = grp_type != GrpType::Normal;
 
-    let (header, war1_style) = read_grp_header(&mut file)?;
-    let is_uncompressed = detect_uncompressed(&mut file, &header, war1_style)?;
-
-    let grp_type = if is_uncompressed && war1_style {
-        GrpType::War1
-    } else if is_uncompressed {
-        GrpType::Uncompressed
-    } else {
-        GrpType::Normal
-    };
-    let frames = read_grp_frames(&mut file, header.frame_count, grp_type)?;
+    let mut file = File::open(input_path).in_file(input_path)?;
+    let file_len = file.metadata().in_file(input_path)?.len();
 
     println!();
     info!("GRP type: {:?}", grp_type);
 
     if args.frame_number.is_some() {
         let frame_number = args.frame_number.unwrap() as usize;
-        if  frame_number > frames.len() {
-            error!("Frame number {} is out of range (0-{})", frame_number, frames.len() - 1);
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        if  frame_number >= frames.len() {
+            return Err(Error::InvalidArgument(format!(
+                "Frame number {} is out of range; the GRP has {} frame(s)", frame_number, frames.len(),
+            )));
+        }
+        if args.analyse_row_number.is_some() && is_uncompressed {
+            return Err(Error::InvalidArgument(
+                "--analyse-row-number is only supported for GRPs of type Normal".to_string(),
+            ));
         }
         let row_number = if args.analyse_row_number.is_none() || is_uncompressed {
             frames[frame_number].height + 1
         } else {
             args.analyse_row_number.unwrap()
         };
-        if row_number > frames[frame_number].height && args.analyse_row_number.is_some() {
-            error!("Row number {} is out of range (0-{})", row_number, frames[frame_number].height);
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid arguments"));
+        if row_number >= frames[frame_number].height && args.analyse_row_number.is_some() {
+            return Err(Error::InvalidArgument(format!(
+                "Row number {} is out of range; frame {} has {} row(s)",
+                row_number, frame_number, frames[frame_number].height,
+            )));
         }
 
         let width = if frames[frame_number].image_data.grp_type != GrpType::UncompressedExtended {
@@ -277,4 +277,44 @@ pub fn analyse_grp(args: &Args) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CompressionType, LogLevel, OperationMode};
+
+    fn make_test_args(input_path: &str, frame_number: Option<u16>) -> Args {
+        Args {
+            input_path:         Some(input_path.to_string()),
+            pal_path:           None,
+            output_path:        None,
+            mode:               Some(OperationMode::AnalyseGrp),
+            compression_type:   CompressionType::Auto,
+            tiled:              false,
+            max_width:          None,
+            frame_number,
+            analyse_row_number: None,
+            use_transparency:   false,
+            log_level:          LogLevel::Info,
+            generator:          None,
+        }
+    }
+
+    #[test]
+    fn rejects_frame_number_equal_to_frame_count() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("one_frame.grp");
+        let mut data = vec![0x01, 0x00, 0x01, 0x00, 0x01, 0x00]; // 1 frame, 1x1 size
+        data.extend([0, 0, 1, 1, 14, 0, 0, 0]); // frame header (offset 14)
+        data.push(0x71); // 1 pixel image data
+        std::fs::write(&path, data).unwrap();
+        let path = path.to_str().unwrap();
+
+        assert!(analyse_grp(&make_test_args(path, Some(0))).is_ok());
+        let err = analyse_grp(&make_test_args(path, Some(1)))
+            .expect_err("expected frame 1 to be out of range");
+        assert!(matches!(err, Error::InvalidArgument(_)));
+    }
 }

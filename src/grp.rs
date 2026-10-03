@@ -1,5 +1,6 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
-use crate::{list_png_files, palpngrs_to_io_error, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::error::{Error, InFile, Result};
+use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use log::{debug, error, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
@@ -7,7 +8,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct GrpHeader {
@@ -68,7 +70,7 @@ impl GrpFrame {
 /// it was in WarCraft I style or not.
 pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)> {
     let mut buf = [0u8; 8];
-    file.read_exact(&mut buf)?;
+    read_grp_bytes(file, &mut buf, "File is too short to contain a GRP header")?;
 
     let frame_count     = u16::from_le_bytes([buf[0], buf[1]]);
     let war1_max_width  = u8 ::from_le_bytes([buf[2]]);
@@ -124,11 +126,17 @@ fn determine_grp_style<R: Read + Seek>(
             return Ok(is_war1_style)
         }
     }
-    let result = try_reading_frame_headers(file, frame_count, get_header_size(false));
-    if result.is_err() {
-        return Err(result.err().unwrap());
-    }
+    try_reading_frame_headers(file, frame_count, get_header_size(false))?;
     Ok(false)
+}
+
+/// Reads exactly `buf.len()` bytes, reporting a truncated file as an invalid GRP
+/// rather than as an I/O error.
+fn read_grp_bytes<R: Read>(file: &mut R, buf: &mut [u8], msg: &str) -> Result<()> {
+    file.read_exact(buf).map_err(|e| match e.kind() {
+        ErrorKind::UnexpectedEof => Error::InvalidGrp(msg.to_string()),
+        _ => e.into(),
+    })
 }
 
 /// Reads all frame headers and checks that the offsets are within file boundaries.
@@ -143,7 +151,7 @@ fn try_reading_frame_headers<R: Read + Seek>(
     for i in 0..frame_count {
         file.seek(SeekFrom::Start(start_pos as u64 + (i * 8) as u64))?;
         let mut buf = [0u8; 8];
-        file.read_exact(&mut buf)?;
+        read_grp_bytes(file, &mut buf, "Frame header table goes beyond end of file")?;
 
         // buf[0] and buf[1] contain x_offset and y_offset, respectively
         let w = u8::from_le_bytes([buf[2]]);
@@ -153,10 +161,12 @@ fn try_reading_frame_headers<R: Read + Seek>(
         let (width, offset) = adjust_width_and_offset_if_extended_when_decoding(w, image_data_offset);
 
         if width == 0 || height == 0 {
-            return Err(Error::new(ErrorKind::Other, "Frame width or height is zero"));
+            return Err(Error::InvalidGrp(format!("Frame {} has zero width or height", i)));
         }
         if offset > file_len as u32 {
-            return Err(Error::new(ErrorKind::Other, "Image data offset is too large"));
+            return Err(Error::InvalidGrp(format!(
+                "Frame {} has image data offset 0x{:X}, beyond end of file (0x{:X})", i, offset, file_len,
+            )));
         }
     }
     Ok(())
@@ -278,14 +288,12 @@ fn read_uncompressed_image_data<R: Read + Seek>(
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
         .checked_sub(image_data_offset as u64)
-        .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+        .ok_or_else(|| Error::InvalidGrp("Image data offset is beyond end of file".to_string()))?;
     if data_len < width as u64 * height as u64 {
-        return Err(Error::new(
-            ErrorKind::UnexpectedEof,
-            format!("Wanted to read {} bytes, but only {} are available in file",
-                    width * height as u16, data_len,
-            ),
-        ));
+        return Err(Error::InvalidGrp(format!(
+            "Wanted to read {} bytes, but only {} are available in file",
+            width as u64 * height as u64, data_len,
+        )));
     }
 
     file.seek(SeekFrom::Start(image_data_offset as u64))?;
@@ -323,7 +331,7 @@ fn read_image_data<R: Read + Seek>(
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
         .checked_sub(image_data_offset as u64)
-        .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "image_data_offset beyond file length"))?;
+        .ok_or_else(|| Error::InvalidGrp("Image data offset is beyond end of file".to_string()))?;
 
     // Seek to the beginning of the row offset table and read the remainder of the file
     file.seek(SeekFrom::Start(image_data_offset as u64))?;
@@ -335,10 +343,7 @@ fn read_image_data<R: Read + Seek>(
     for i in 0..height {
         let offset_start = (i * 2) as usize;
         if  offset_start + 2 > data_block.len() {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                "Not enough data for row offset table",
-            ));
+            return Err(Error::InvalidGrp("Not enough data for row offset table".to_string()));
         }
         let row_offset = u16::from_le_bytes([data_block[offset_start], data_block[offset_start + 1]]);
         row_offsets.push(row_offset);
@@ -349,10 +354,9 @@ fn read_image_data<R: Read + Seek>(
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
         if row_offset as usize >= data_block.len() {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                format!("Row data offset {} is beyond end of data_block ({})", row_offset, data_block.len()),
-            ));
+            return Err(Error::InvalidGrp(format!(
+                "Row data offset {} is beyond end of data_block ({})", row_offset, data_block.len(),
+            )));
         }
         let row_data = &data_block[row_offset as usize ..];
         debug!(
@@ -363,12 +367,10 @@ fn read_image_data<R: Read + Seek>(
         let (decoded_row, encoded_length) = decode_grp_rle_row(row_data, width);
 
         if row_offset as usize + encoded_length > data_block.len() {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof, format!(
-                    "Row {} encoded length goes beyond buffer: {} + {} > {}",
-                    row, row_offset, encoded_length, data_block.len(),
-                ),
-            ));
+            return Err(Error::InvalidGrp(format!(
+                "Row {} encoded length goes beyond buffer: {} + {} > {}",
+                row, row_offset, encoded_length, data_block.len(),
+            )));
         }
 
         raw_row_data.push(row_data[..encoded_length].to_vec());
@@ -715,7 +717,7 @@ fn png_to_grpframe(
             // The image size was checked when reading the PNGs, but an image width of up to 512
             // is allowed for Extended Uncompressed GRPs. Here, we're dealing with Normal GRPs,
             // which have a max width of 255.
-            return Err(Error::new(ErrorKind::InvalidInput, format!(
+            return Err(Error::CannotEncode(format!(
                 "Width ({}) is above limit of {}", image.width, u8::MAX)))
         }
         encode_grp_rle_data(image.width, image.height, image.palettized_image, compression)
@@ -762,7 +764,7 @@ fn files_to_grp(
     let mut max_height = 0;
 
     for (index, png_file) in png_files.iter().enumerate() {
-        let image = png_to_pixels(png_file.as_str(), palette)?;
+        let image = png_to_pixels(png_file.as_str(), palette).in_file(png_file)?;
         let reuse_key = make_frame_reuse_key(&compression_type, &image);
 
         if let Some(&existing_index) = seen_frames.get(&reuse_key) {
@@ -781,19 +783,19 @@ fn files_to_grp(
         } else {
             let orig_width  = image.original_width;
             let orig_height = image.original_height;
-            let grp_frame = png_to_grpframe(image, image_data_offset, &compression_type)?;
+            let grp_frame = png_to_grpframe(image, image_data_offset, &compression_type).in_file(png_file)?;
 
             image_data_offset += grp_frame.grp_frame_len() as u32;
             if offset_is_extended(image_data_offset) {
-                return Err(Error::new(ErrorKind::InvalidInput,
-                    "The image data offset is already too big to add more GRPs!",
-                ));
+                return Err(Error::CannotEncode(
+                    "The image data offset is already too big to add more frames".to_string(),
+                )).in_file(png_file);
             }
             validate_war1_frame_extent(
                 compression_type,
                 grp_frame.width,  grp_frame.x_offset,
                 grp_frame.height, grp_frame.y_offset,
-            )?;
+            ).in_file(png_file)?;
 
             seen_frames.insert(reuse_key, grp_frames.len());
             grp_frames.push(grp_frame);
@@ -828,7 +830,7 @@ fn validate_war1_frame_extent(
     let right  = width  as u16 + x_offset as u16;
     let bottom = height as u16 + y_offset as u16;
     if right > u8::MAX as u16 || bottom > u8::MAX as u16 {
-        return Err(Error::new(ErrorKind::InvalidInput, format!(
+        return Err(Error::CannotEncode(format!(
             "For compression type {}: \
             width ({}) added to x-offset ({}) is {} and must be below {}, or \
             height ({}) added to y-offset ({}) is {} and must be below {}. \
@@ -935,24 +937,31 @@ pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war
     Ok(is_uncompressed)
 }
 
+/// Opens and parses the GRP at the given path. Returns its header, its type and its frames.
+pub fn read_grp_file(path: impl AsRef<Path>) -> Result<(GrpHeader, GrpType, Vec<GrpFrame>)> {
+    let read = || -> Result<_> {
+        let mut f = File::open(&path)?;
+        let (header, war1_style) = read_grp_header(&mut f)?;
+        let is_uncompressed = detect_uncompressed(&mut f, &header, war1_style)?;
+
+        let grp_type = if is_uncompressed && war1_style {
+            GrpType::War1
+        } else if is_uncompressed {
+            GrpType::Uncompressed
+        } else {
+            GrpType::Normal
+        };
+
+        let frames = read_grp_frames(&mut f, header.frame_count, grp_type)?;
+        Ok((header, grp_type, frames))
+    };
+    read().in_file(&path)
+}
+
 /// Converts a GRP to PNGs
 pub fn grp_to_png(args: &Args) -> Result<()> {
     let palette = get_palette(args)?;
-    let input_path = &args.input_path.clone().unwrap();
-
-    let mut f = File::open(input_path)?;
-    let (header, war1_style) = read_grp_header(&mut f)?;
-    let is_uncompressed = detect_uncompressed(&mut f, &header, war1_style)?;
-
-    let grp_type = if is_uncompressed && war1_style {
-        GrpType::War1
-    } else if is_uncompressed {
-        GrpType::Uncompressed
-    } else {
-        GrpType::Normal
-    };
-
-    let frames = read_grp_frames(&mut f, header.frame_count, grp_type)?;
+    let (header, _, frames) = read_grp_file(args.input_path.as_deref().unwrap())?;
 
     render_and_save_frames_to_png(
         &frames,
@@ -965,7 +974,7 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
 
 fn get_palette(args: &Args) -> Result<Vec<[u8; 3]>> {
     if let Some(path) = &args.pal_path {
-        read_rgb_palette(path).map_err(palpngrs_to_io_error)
+        read_rgb_palette(path).in_file(path)
     } else {
         warn!("No palette given - defaulting to greyscale palette");
         Ok(greyscale_palette())
@@ -981,7 +990,7 @@ pub fn png_to_grp(args: &Args) -> Result<()> {
 
     let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &compression_type)?;
     let grp_header = create_grp_header(&grp_frames, max_width, max_height);
-    write_grp_file(out_path, &grp_header, &grp_frames, &compression_type)
+    write_grp_file(out_path, &grp_header, &grp_frames, &compression_type).in_file(out_path)
 }
 
 
@@ -1008,7 +1017,40 @@ mod tests {
 
         let result = read_grp_header(&mut cursor);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::InvalidGrp(_))));
+    }
+
+    #[test]
+    fn read_grp_file_names_the_file_in_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("broken.grp");
+        std::fs::write(&path, [0u8; 3]).unwrap();
+
+        let err = read_grp_file(&path).expect_err("expected an invalid GRP");
+        assert!(matches!(err.root(), Error::InvalidGrp(_)));
+        assert!(err.to_string().starts_with(&format!("{}: invalid GRP", path.display())));
+    }
+
+    #[test]
+    fn files_to_grp_names_the_png_in_errors() {
+        let palette = greyscale_palette();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file = temp_dir.path().join("too_wide.png").to_str().unwrap().to_string();
+        // Allowed for Extended Uncompressed GRPs, but too wide for Normal ones
+        create_test_png(&file, [42, 42, 42], 300, 10);
+
+        let err = files_to_grp(vec![file.clone()], &palette, &CompressionType::Normal)
+            .expect_err("expected a too-wide image to be rejected");
+        assert!(matches!(err.root(), Error::CannotEncode(_)));
+        assert!(err.to_string().starts_with(&file));
+    }
+
+    #[test]
+    fn list_png_files_rejects_directory_without_pngs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let err = list_png_files(temp_dir.path().to_str().unwrap())
+            .expect_err("expected an empty directory to be rejected");
+        assert!(matches!(err, Error::InvalidArgument(_)));
     }
 
     #[test]
@@ -1459,7 +1501,7 @@ mod tests {
         // 200 + 56 = 256 > 255
         let err = validate_war1_frame_extent(&CompressionType::War1, 200, 56, 10, 10)
             .expect_err("expected width-extent rejection");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(matches!(err, Error::CannotEncode(_)));
         assert!(err.to_string().contains("256"));
     }
 
@@ -1468,7 +1510,7 @@ mod tests {
         // 150 + 200 = 350 > 255
         let err = validate_war1_frame_extent(&CompressionType::War1, 10, 10, 150, 200)
             .expect_err("expected height-extent rejection");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(matches!(err, Error::CannotEncode(_)));
         assert!(err.to_string().contains("350"));
     }
 

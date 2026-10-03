@@ -3,21 +3,14 @@ use clap_complete::Shell;
 use simplelog::LevelFilter;
 use std::fmt;
 use std::fs;
-use std::io::{Error, ErrorKind};
 
 pub mod analyse;
+pub mod error;
 pub mod grp;
 pub mod png;
 
-/// Converts a `palpngrs::Error` into a `std::io::Error`, preserving the
-/// underlying I/O error where there is one.
-pub(crate) fn palpngrs_to_io_error(e: palpngrs::Error) -> Error {
-    match e {
-        palpngrs::Error::Io(e) => e,
-        palpngrs::Error::Image(_) => Error::new(ErrorKind::InvalidData, e),
-        _ => Error::new(ErrorKind::InvalidInput, e),
-    }
-}
+pub use error::{Error, Result};
+use error::InFile;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -131,8 +124,8 @@ impl From<LogLevel> for LevelFilter {
 }
 
 /// Returns all PNG files in the given directory.
-pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?
+pub fn list_png_files(dir: &str) -> Result<Vec<String>> {
+    let mut entries: Vec<_> = fs::read_dir(dir).in_file(dir)?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             if path.extension()?.to_str()?.eq_ignore_ascii_case("png") {
@@ -143,10 +136,13 @@ pub fn list_png_files(dir: &str) -> std::io::Result<Vec<String>> {
         })
         .collect();
 
+    if entries.is_empty() {
+        return Err(Error::InvalidArgument(format!("No PNG files found in directory '{}'", dir)));
+    }
     if entries.len() > u16::MAX as usize {
-        return Err(Error::new(ErrorKind::InvalidInput, format!(
-            "Too many PNGs found in directory! Found {} PNGs, but cannot handle more than {}",
-            entries.len(), u16::MAX)))
+        return Err(Error::InvalidArgument(format!(
+            "Too many PNGs found in directory '{}'! Found {} PNGs, but cannot handle more than {}",
+            dir, entries.len(), u16::MAX)))
     }
     entries.sort();
     Ok(entries)

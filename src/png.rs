@@ -1,10 +1,10 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{palpngrs_to_io_error, Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::error::{Error, InFile, Result};
+use crate::{Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use log::{debug, info};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::ErrorKind;
 
 pub fn render_and_save_frames_to_png(
     frames: &[GrpFrame],
@@ -12,7 +12,7 @@ pub fn render_and_save_frames_to_png(
     max_frame_width:  u32,
     max_frame_height: u32,
     args: &Args,
-) -> std::io::Result<()> {
+) -> Result<()> {
     if args.tiled && args.frame_number.is_none() {
         // Tiled mode, so we need to draw all frames into one image.
         // Attempt to set the number of columns to sqrt(number of frames), so e.g., if there
@@ -68,7 +68,7 @@ pub fn render_and_save_frames_to_png(
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
         save_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)
-            .map_err(palpngrs_to_io_error)?;
+            .in_file(&output_path)?;
         info!("Saved all frames to {}", output_path);
 
     } else {
@@ -108,7 +108,7 @@ pub fn render_and_save_frames_to_png(
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
             save_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)
-                .map_err(palpngrs_to_io_error)?;
+                .in_file(&output_path)?;
             info!("Saved frame {:2} to {}", i, output_path);
         }
 
@@ -146,7 +146,7 @@ fn image_to_buffer(
     max_frame_width:  u32,
     max_frame_height: u32,
     use_transparency: bool,
-) -> Result<Vec<u8>, std::io::Error> {
+) -> Result<Vec<u8>> {
 
     let width = if frame.image_data.grp_type == GrpType::UncompressedExtended {
         frame.width as u32 + EXTENDED_IMAGE_WIDTH as u32
@@ -161,23 +161,21 @@ fn image_to_buffer(
         frame.image_data.converted_pixels.clone(),
     );
 
-    let buffer = draw_image_to_pixel_buffer(image, palette, use_transparency)
-        .map_err(palpngrs_to_io_error)?;
+    let buffer = draw_image_to_pixel_buffer(image, palette, use_transparency)?;
     Ok(buffer)
 }
 
-pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<PalettizedImageWithMetadata<u8, u16>> {
+pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> Result<PalettizedImageWithMetadata<u8, u16>> {
     debug!(""); // Give some space in the logs
     // PNGs exported without --use-transparency have their transparent pixels drawn as palette[0],
     // so treat that colour as transparent when reading them back.
-    let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true, Palette0Pixels::Transparent)
-        .map_err(palpngrs_to_io_error)?;
+    let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true, Palette0Pixels::Transparent)?;
 
     // UncompressedExtended GRPs store width as `actual_width - EXTENDED_IMAGE_WIDTH` in a u8,
     // so the maximum representable width is EXTENDED_IMAGE_WIDTH + u8::MAX (= 511).
     let max_width = EXTENDED_IMAGE_WIDTH as u32 + u8::MAX as u32;
     if png.width as u32 > max_width || png.height as u32 > u8::MAX as u32 {
-        return Err(std::io::Error::new(ErrorKind::InvalidInput, format!(
+        return Err(Error::CannotEncode(format!(
             "Width ({}) is above limit of {}, or height ({}) is above limit of {}",
             png.width, max_width, png.height, u8::MAX,
         )))
