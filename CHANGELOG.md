@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Ability to specify and load palettes (up to 9) in the yazi integration.
 
+### Changed
+- Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.
+
 
 
 ## [0.5] - 2025-06-19

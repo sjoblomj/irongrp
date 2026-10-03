@@ -80,7 +80,7 @@ pub fn render_and_save_frames_to_png(
         let mut image_hash_map: HashMap<u64, Vec<usize>> = HashMap::new();
 
         for (i, frame) in frames.iter().enumerate() {
-            if args.frame_number == Some(i as u16) {
+            if args.frame_number.is_some() && args.frame_number != Some(i as u16) {
                 continue;
             }
             offset_map.entry(frame.image_data_offset)
@@ -177,4 +177,93 @@ pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Re
         )))
     }
     Ok(png)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grp::ImageData;
+    use crate::{CompressionType, LogLevel};
+    use palpngrs::greyscale_palette;
+    use std::fs;
+    use std::path::Path;
+
+    fn make_test_frame(pixel_value: u8, width: u8, height: u8) -> GrpFrame {
+        GrpFrame {
+            x_offset: 0,
+            y_offset: 0,
+            width,
+            height,
+            image_data_offset: 0,
+            image_data: ImageData {
+                row_offsets:      vec![],
+                raw_row_data:     vec![],
+                converted_pixels: vec![pixel_value; width as usize * height as usize],
+                grp_type:         GrpType::Normal,
+            },
+        }
+    }
+
+    fn make_test_args(output_path: &str, frame_number: Option<u16>) -> Args {
+        Args {
+            input_path:         None,
+            pal_path:           None,
+            output_path:        Some(output_path.to_string()),
+            mode:               None,
+            compression_type:   CompressionType::Auto,
+            tiled:              false,
+            max_width:          None,
+            frame_number,
+            analyse_row_number: None,
+            use_transparency:   false,
+            log_level:          LogLevel::Info,
+            generator:          None,
+        }
+    }
+
+    #[test]
+    fn saves_all_frames_when_no_frame_number_given() {
+        let temp_dir = "temp_test_render_all";
+        fs::create_dir_all(temp_dir).unwrap();
+        let palette = greyscale_palette().unwrap();
+
+        let frames = vec![
+            make_test_frame(10, 4, 4),
+            make_test_frame(20, 4, 4),
+            make_test_frame(30, 4, 4),
+        ];
+        let args = make_test_args(temp_dir, None);
+
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
+
+        for i in 0..frames.len() {
+            let path = format!("{}/frame_{:03}.png", temp_dir, i);
+            assert!(Path::new(&path).exists(), "Expected {} to exist", path);
+        }
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn saves_only_requested_frame_when_frame_number_given() {
+        let temp_dir = "temp_test_render_single";
+        fs::create_dir_all(temp_dir).unwrap();
+        let palette = greyscale_palette().unwrap();
+
+        let frames = vec![
+            make_test_frame(10, 4, 4),
+            make_test_frame(20, 4, 4),
+            make_test_frame(30, 4, 4),
+        ];
+        let args = make_test_args(temp_dir, Some(1));
+
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
+
+        assert!(!Path::new(&format!("{}/frame_000.png", temp_dir)).exists());
+        assert!( Path::new(&format!("{}/frame_001.png", temp_dir)).exists());
+        assert!(!Path::new(&format!("{}/frame_002.png", temp_dir)).exists());
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
 }
