@@ -1,14 +1,14 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{palpngrs_to_io_error, Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use log::{debug, info};
-use palpngrs::{draw_image_to_pixel_buffer, read_png, save_rgb_pixels_to_image_file, PalettizedImageWithMetadata};
+use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
 
 pub fn render_and_save_frames_to_png(
     frames: &[GrpFrame],
-    palette: &Vec<[u8; 3]>,
+    palette: &[[u8; 3]],
     max_frame_width:  u32,
     max_frame_height: u32,
     args: &Args,
@@ -67,7 +67,8 @@ pub fn render_and_save_frames_to_png(
         }
 
         let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
-        save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)?;
+        save_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)
+            .map_err(palpngrs_to_io_error)?;
         info!("Saved all frames to {}", output_path);
 
     } else {
@@ -106,7 +107,8 @@ pub fn render_and_save_frames_to_png(
             };
 
             let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
-            save_rgb_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)?;
+            save_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)
+                .map_err(palpngrs_to_io_error)?;
             info!("Saved frame {:2} to {}", i, output_path);
         }
 
@@ -140,7 +142,7 @@ pub fn render_and_save_frames_to_png(
 
 fn image_to_buffer(
     frame: &GrpFrame,
-    palette: &Vec<[u8; 3]>,
+    palette: &[[u8; 3]],
     max_frame_width:  u32,
     max_frame_height: u32,
     use_transparency: bool,
@@ -152,23 +154,24 @@ fn image_to_buffer(
         frame.width as u32
     };
 
-    let image = PalettizedImageWithMetadata {
-        x_offset: frame.x_offset as u32,
-        y_offset: frame.y_offset as u32,
-        width,
-        height:   frame.height as u32,
-        original_width:  max_frame_width,
-        original_height: max_frame_height,
-        palettized_image: frame.image_data.converted_pixels.clone(),
-    };
+    let image = PalettizedImageWithMetadata::new(
+        Offset::new(frame.x_offset as u32, frame.y_offset as u32),
+        Size::new(width, frame.height as u32),
+        Size::new(max_frame_width, max_frame_height),
+        frame.image_data.converted_pixels.clone(),
+    );
 
-    let buffer = draw_image_to_pixel_buffer(image, &palette, use_transparency)?;
+    let buffer = draw_image_to_pixel_buffer(image, palette, use_transparency)
+        .map_err(palpngrs_to_io_error)?;
     Ok(buffer)
 }
 
-pub fn png_to_pixels(png_file_name: &str, palette: &Vec<[u8; 3]>) -> std::io::Result<PalettizedImageWithMetadata<u8, u16>> {
+pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> std::io::Result<PalettizedImageWithMetadata<u8, u16>> {
     debug!(""); // Give some space in the logs
-    let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true)?;
+    // PNGs exported without --use-transparency have their transparent pixels drawn as palette[0],
+    // so treat that colour as transparent when reading them back.
+    let png: PalettizedImageWithMetadata<u8, u16> = read_png(png_file_name, palette, true, Palette0Pixels::Transparent)
+        .map_err(palpngrs_to_io_error)?;
 
     // UncompressedExtended GRPs store width as `actual_width - EXTENDED_IMAGE_WIDTH` in a u8,
     // so the maximum representable width is EXTENDED_IMAGE_WIDTH + u8::MAX (= 511).
@@ -228,7 +231,7 @@ mod tests {
     fn saves_all_frames_when_no_frame_number_given() {
         let temp_dir = tempfile::tempdir().unwrap();
         let dir = temp_dir.path().to_str().unwrap();
-        let palette = greyscale_palette().unwrap();
+        let palette = greyscale_palette();
 
         let frames = vec![
             make_test_frame(10, 4, 4),
@@ -249,7 +252,7 @@ mod tests {
     fn saves_only_requested_frame_when_frame_number_given() {
         let temp_dir = tempfile::tempdir().unwrap();
         let dir = temp_dir.path().to_str().unwrap();
-        let palette = greyscale_palette().unwrap();
+        let palette = greyscale_palette();
 
         let frames = vec![
             make_test_frame(10, 4, 4),
@@ -263,5 +266,25 @@ mod tests {
         assert!(!Path::new(&format!("{}/frame_000.png", dir)).exists());
         assert!( Path::new(&format!("{}/frame_001.png", dir)).exists());
         assert!(!Path::new(&format!("{}/frame_002.png", dir)).exists());
+    }
+
+    #[test]
+    fn png_without_transparency_reads_back_with_transparent_background() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+
+        // A 2x2 frame at (3, 1) on a 6x4 canvas. The background is drawn as
+        // opaque palette[0] since use_transparency is false.
+        let mut frame = make_test_frame(10, 2, 2);
+        frame.x_offset = 3;
+        frame.y_offset = 1;
+        let args = make_test_args(dir, None);
+        render_and_save_frames_to_png(&[frame], &palette, 6, 4, &args).unwrap();
+
+        let png = png_to_pixels(&format!("{}/frame_000.png", dir), &palette).unwrap();
+        assert_eq!((png.x_offset, png.y_offset), (3, 1));
+        assert_eq!((png.width, png.height), (2, 2));
+        assert_eq!(png.palettized_image, vec![10; 4]);
     }
 }

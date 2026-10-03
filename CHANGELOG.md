@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - Better handling of argument validation by using clap.
 - Reuse the open file handle in `detect_uncompressed` instead of reopening the GRP a second time.
 - Restrict the auto-detect for War1 and Uncompressed to the PNG file names, so a parent directory named like `war1_sprites/` no longer changes the chosen format.
+- Updated `palpngrs` to 0.3.0.
 
 ### Bug fixes
 - Corrected bug where specifying a frame to output with `--frame-number` would output all frames except that one.

@@ -9,6 +9,16 @@ pub mod analyse;
 pub mod grp;
 pub mod png;
 
+/// Converts a `palpngrs::Error` into a `std::io::Error`, preserving the
+/// underlying I/O error where there is one.
+pub(crate) fn palpngrs_to_io_error(e: palpngrs::Error) -> Error {
+    match e {
+        palpngrs::Error::Io(e) => e,
+        palpngrs::Error::Image(_) => Error::new(ErrorKind::InvalidData, e),
+        _ => Error::new(ErrorKind::InvalidInput, e),
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {

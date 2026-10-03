@@ -1,5 +1,5 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
-use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{list_png_files, palpngrs_to_io_error, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use log::{debug, error, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
@@ -749,7 +749,7 @@ fn png_to_grpframe(
 /// Turn all the given PNG files into a set of GrpFrames.
 fn files_to_grp(
     png_files: Vec<String>,
-    palette: &Vec<[u8; 3]>,
+    palette: &[[u8; 3]],
     compression_type: &CompressionType,
 ) -> Result<(Vec<GrpFrame>, u16, u16)> {
 
@@ -840,7 +840,7 @@ fn validate_war1_frame_extent(
     Ok(())
 }
 
-fn determine_compression_type(png_files: &Vec<String>, compression_type: &CompressionType) -> CompressionType {
+fn determine_compression_type(png_files: &[String], compression_type: &CompressionType) -> CompressionType {
     let compression = if *compression_type != CompressionType::Auto {
         compression_type.clone()
     } else {
@@ -965,10 +965,10 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
 
 fn get_palette(args: &Args) -> Result<Vec<[u8; 3]>> {
     if let Some(path) = &args.pal_path {
-        read_rgb_palette(path)
+        read_rgb_palette(path).map_err(palpngrs_to_io_error)
     } else {
         warn!("No palette given - defaulting to greyscale palette");
-        greyscale_palette()
+        Ok(greyscale_palette())
     }
 }
 
@@ -1382,7 +1382,7 @@ mod tests {
 
     #[test]
     fn detects_duplicate_frames() {
-        let palette = greyscale_palette().unwrap();
+        let palette = greyscale_palette();
         let temp_dir = tempfile::tempdir().unwrap();
         let dir = temp_dir.path();
 
@@ -1416,7 +1416,7 @@ mod tests {
 
     #[test]
     fn does_not_deduplicate_different_frames() {
-        let palette = greyscale_palette().unwrap();
+        let palette = greyscale_palette();
         let temp_dir = tempfile::tempdir().unwrap();
         let dir = temp_dir.path();
 
