@@ -87,9 +87,16 @@ impl GrpFrame {
 /// it was in WarCraft I style or not.
 pub fn read_grp_header<R: Read + Seek>(file: &mut R) -> Result<(GrpHeader, bool)> {
     let mut buf = [0u8; 8];
-    read_grp_bytes(file, &mut buf, "File is too short to contain a GRP header")?;
+    let too_short = "File is too short to contain a GRP header";
+    read_grp_bytes(file, &mut buf[..2], too_short)?;
+    let frame_count = u16::from_le_bytes([buf[0], buf[1]]);
+    if frame_count == 0 {
+        // Such GRPs are not created by IronGRP either, and with no frame headers to examine,
+        // a WarCraft I style header cannot be told apart from a normal one.
+        return Err(Error::InvalidGrp("The GRP has no frames".to_string()));
+    }
+    read_grp_bytes(file, &mut buf[2..], too_short)?;
 
-    let frame_count     = u16::from_le_bytes([buf[0], buf[1]]);
     let war1_max_width  = u8 ::from_le_bytes([buf[2]]);
     let war1_max_height = u8 ::from_le_bytes([buf[3]]);
     let max_width       = u16::from_le_bytes([buf[2], buf[3]]);
@@ -1034,6 +1041,31 @@ mod tests {
         let result = read_grp_header(&mut cursor);
 
         assert!(matches!(result, Err(Error::InvalidGrp(_))));
+    }
+
+    #[test]
+    fn rejects_grp_without_frames() {
+        use std::io::Cursor;
+        // A header of 2, 4 (War1 style), 6 (normal) and more bytes, all with a frame count of 0
+        for len in [2, 4, 6, 8, 100] {
+            let mut data = vec![0u8; len];
+            if len >= 6 {
+                data[2..6].copy_from_slice(&[0x10, 0x00, 0x10, 0x00]); // Max size 16x16
+            }
+            let err = read_grp_header(&mut Cursor::new(data)).expect_err("expected 0 frames to be rejected");
+            assert!(matches!(err, Error::InvalidGrp(_)), "for {} bytes", len);
+            assert_eq!(err.to_string(), "invalid GRP: The GRP has no frames", "for {} bytes", len);
+        }
+    }
+
+    #[test]
+    fn rejects_grp_too_short_for_frame_count_or_header() {
+        use std::io::Cursor;
+        // Too short for the frame count, or a frame count of 1 but too short for the rest
+        for data in [vec![], vec![0x01], vec![0x01, 0x00], vec![0x01, 0x00, 0x01, 0x00, 0x01]] {
+            let err = read_grp_header(&mut Cursor::new(data.clone())).expect_err("expected an error");
+            assert_eq!(err.to_string(), "invalid GRP: File is too short to contain a GRP header", "for {:?}", data);
+        }
     }
 
     #[test]

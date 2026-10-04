@@ -84,3 +84,31 @@ fn grp_to_png_writes_only_the_requested_frame() {
         .collect();
     assert_eq!(files, vec!["uncompressed_frame_002.png"]);
 }
+
+#[test]
+fn grp_without_frames_is_rejected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = temp_dir.path().join("empty.grp");
+    std::fs::write(&grp, [0, 0, 16, 0, 16, 0]).unwrap(); // 0 frames, max size 16x16
+    let grp = grp.to_str().unwrap();
+    let out_dir = temp_dir.path().join("out");
+
+    for mode_args in [
+        vec!["--mode", "grp-to-png", "--output-path", out_dir.to_str().unwrap()],
+        vec!["--mode", "grp-to-png", "--output-path", out_dir.to_str().unwrap(), "--tiled"],
+        vec!["--mode", "analyse-grp"],
+    ] {
+        let output = irongrp()
+            .args(["--input-path", grp])
+            .args(&mode_args)
+            .output()
+            .expect("failed to run irongrp");
+
+        assert!(!output.status.success(), "expected a failure exit status for {:?}", mode_args);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(&format!("{}: invalid GRP: The GRP has no frames", grp)),
+            "for {:?}: {:?}", mode_args, stderr,
+        );
+    }
+}
