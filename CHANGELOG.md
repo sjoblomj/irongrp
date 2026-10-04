@@ -43,6 +43,7 @@ All notable changes to this project will be documented in this file.
 - Stricter validation of the frame headers when reading a GRP: image data offsets pointing into the header or the frame header table, at the end of the file, or too close to the end of the file to hold the frame's image data are now rejected.
 - Malformed image data in Normal GRPs is now reported with one warning per frame, naming the problems and the rows affected, instead of one error log line per problem. The image is still decoded as well as possible.
 - Corrected the decoding of instructions to copy 0 pixels in malformed GRPs, which skipped the following byte.
+- Converting PNGs to a GRP now fails with an error naming the file if a PNG's file name is not valid UTF-8, instead of silently leaving that frame out of the GRP.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

@@ -126,16 +126,22 @@ impl From<LogLevel> for LevelFilter {
 
 /// Returns all PNG files in the given directory.
 pub fn list_png_files(dir: &str) -> Result<Vec<String>> {
-    let mut entries: Vec<_> = fs::read_dir(dir).in_file(dir)?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if path.extension()?.to_str()?.eq_ignore_ascii_case("png") {
-                path.to_str().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir).in_file(dir)? {
+        let path = entry.in_file(dir)?.path();
+        let is_png = path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+        if is_png {
+            let Some(path_str) = path.to_str() else {
+                return Err(Error::InvalidArgument(format!(
+                    "The file name of '{}' is not valid UTF-8, which is not supported. Please rename it.",
+                    path.display(),
+                )));
+            };
+            entries.push(path_str.to_string());
+        }
+    }
 
     if entries.is_empty() {
         return Err(Error::InvalidArgument(format!("No PNG files found in directory '{}'", dir)));
@@ -247,6 +253,51 @@ mod tests {
     #[test]
     fn natural_cmp_handles_numbers_too_large_for_integers() {
         assert_eq!(natural_cmp("99999999999999999999999", "100000000000000000000000"), Ordering::Less);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn list_png_files_rejects_png_whose_name_is_not_valid_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("frame_000.png"), []).unwrap();
+        let invalid_name = OsStr::from_bytes(b"frame_\xFF01.png");
+        std::fs::write(temp_dir.path().join(invalid_name), []).unwrap();
+
+        let err = list_png_files(temp_dir.path().to_str().unwrap())
+            .expect_err("expected the PNG with an invalid UTF-8 name to be rejected");
+        assert!(matches!(err, Error::InvalidArgument(_)));
+        assert!(err.to_string().contains("frame_\u{FFFD}01.png"), "{}", err);
+        assert!(err.to_string().contains("not valid UTF-8"), "{}", err);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn list_png_files_ignores_non_png_whose_name_is_not_valid_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("frame_000.png"), []).unwrap();
+        std::fs::write(temp_dir.path().join(OsStr::from_bytes(b"notes_\xFF.txt")), []).unwrap();
+        std::fs::write(temp_dir.path().join(OsStr::from_bytes(b"image.\xFFpng")), []).unwrap();
+
+        let files = list_png_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("frame_000.png"));
+    }
+
+    #[test]
+    fn list_png_files_accepts_any_case_of_the_png_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for name in ["a.png", "b.PNG", "c.Png", "d.png.txt", "e"] {
+            std::fs::write(temp_dir.path().join(name), []).unwrap();
+        }
+        let files = list_png_files(temp_dir.path().to_str().unwrap()).unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.rsplit('/').next().unwrap()).collect();
+        assert_eq!(names, vec!["a.png", "b.PNG", "c.Png"]);
     }
 
     #[test]
