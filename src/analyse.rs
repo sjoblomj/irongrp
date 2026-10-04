@@ -62,14 +62,14 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
                 info!(
                     "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
                     i, i, frames[frame_number].image_data.row_offsets[i],
-                    frames[frame_number].image_data.row_offsets[i] + frames[frame_number].decoded_image_data_offset() as u16,
+                    absolute_row_offset(&frames[frame_number], i),
                 );
             }
         }
         if args.analyse_row_number.is_some() && frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
                 if row_number == i as u8 {
-                    let start = frames[frame_number].decoded_image_data_offset() as u64 + frames[frame_number].image_data.row_offsets[i] as u64;
+                    let start = absolute_row_offset(&frames[frame_number], i);
                     println!();
                     info!(
                         "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
@@ -233,6 +233,11 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The offset in the file where row `row` of the given Normal frame starts.
+fn absolute_row_offset(frame: &GrpFrame, row: usize) -> u64 {
+    frame.decoded_image_data_offset() as u64 + frame.image_data.row_offsets[row] as u64
 }
 
 /// Returns the byte ranges of the file that are used by the header, the frame headers and the
@@ -428,6 +433,52 @@ mod tests {
         assert_eq!((ranges[0].0, ranges[0].1), (0, 6),  "GRP header");
         assert_eq!((ranges[1].0, ranges[1].1), (6, 22), "frame headers");
         assert_ranges_cover_file(&ranges, std::fs::metadata(&path).unwrap().len());
+    }
+
+    /// Writes a Normal GRP whose one 2x2 frame has its image data beyond 64 KiB into the file,
+    /// and returns its path and the offset of the image data
+    fn write_grp_with_image_data_beyond_64_kib(dir: &std::path::Path) -> (String, u32) {
+        // Truncated to u16 this is 0xFFFE, so adding a row offset to it would overflow
+        let image_data_offset: u32 = 0x1_FFFE;
+        let mut data = vec![0x01, 0x00, 0x02, 0x00, 0x02, 0x00]; // 1 frame, max width and height 2
+        data.extend([0, 0, 2, 2]);
+        data.extend(image_data_offset.to_le_bytes());
+        data.resize(image_data_offset as usize, 0); // Unused padding up to the image data
+        data.extend([4, 0, 6, 0]);                  // Row offsets: row 0 at +4, row 1 at +6
+        data.extend([0x42, 0x07]);                  // Row 0: colour 7 repeated twice
+        data.extend([0x02, 0x08, 0x09]);            // Row 1: copy the 2 pixels 8 and 9
+        let path = dir.join("far.grp");
+        std::fs::write(&path, data).unwrap();
+        (path.to_str().unwrap().to_string(), image_data_offset)
+    }
+
+    #[test]
+    fn absolute_row_offset_does_not_truncate_offsets_beyond_64_kib() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (path, image_data_offset) = write_grp_with_image_data_beyond_64_kib(temp_dir.path());
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::Normal);
+        assert_eq!(frames[0].image_data.converted_pixels, vec![7, 7, 8, 9]);
+
+        assert_eq!(absolute_row_offset(&frames[0], 0), image_data_offset as u64 + 4);
+        assert_eq!(absolute_row_offset(&frames[0], 1), image_data_offset as u64 + 6);
+    }
+
+    #[test]
+    fn analyses_frame_with_image_data_beyond_64_kib() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (path, _) = write_grp_with_image_data_beyond_64_kib(temp_dir.path());
+        // The offsets are computed in the arguments to info!, which are only evaluated if the
+        // log level is enabled. No logger is installed, so nothing is actually printed.
+        log::set_max_level(log::LevelFilter::Info);
+
+        analyse_grp(&make_test_args(&path, None)).expect("expected the whole GRP to be analysed");
+        analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
+        for row in [0, 1] {
+            let mut args = make_test_args(&path, Some(0));
+            args.analyse_row_number = Some(row);
+            analyse_grp(&args).unwrap_or_else(|e| panic!("expected row {} to be analysed: {}", row, e));
+        }
     }
 
     #[test]
