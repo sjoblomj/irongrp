@@ -9,6 +9,11 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+/// Set in the image data offset of frames of Extended Uncompressed GRPs, which are wider than 255
+const EXTENDED_OFFSET_BIT: u32 = 0x8000_0000;
+/// Added to the width stored in the frame header of frames of Extended Uncompressed GRPs
+pub const EXTENDED_IMAGE_WIDTH: u16 = 256;
+
 #[derive(Debug)]
 pub struct GrpHeader {
     pub frame_count: u16,
@@ -236,7 +241,7 @@ fn adjust_width_and_offset_if_extended_when_decoding(width: u8, image_data_offse
         // If the high bit is set, that means that the frame of the
         // Uncompressed GRP has a width greater than 256 pixels.
 
-        let offset = image_data_offset & EXTENDED_OFFSET_BIT - 1; // clear the highest bit
+        let offset = image_data_offset & !EXTENDED_OFFSET_BIT; // clear the highest bit
         return (width as u16 + EXTENDED_IMAGE_WIDTH, offset)
     };
     (width as u16, image_data_offset)
@@ -571,11 +576,10 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
     let mut i = 0;
 
     debug!("Beginning to encode using compression type '{}'", compression_type);
-    for x in 0..row_pixels.len() {
-        trace!(
-            "x: {:2}, row_pixels[i]: {:2X} ({:3})",
-            x, row_pixels[x], row_pixels[x],
-        );
+    if log::log_enabled!(log::Level::Trace) {
+        for (x, pixel) in row_pixels.iter().enumerate() {
+            trace!("x: {:2}, row_pixels[x]: {:2X} ({:3})", x, pixel, pixel);
+        }
     }
 
     let same_colour_threshold = if let CompressionType::Optimised = compression_type {
@@ -631,17 +635,17 @@ fn encode_grp_rle_row(row_pixels: &[u8], compression_type: &CompressionType) -> 
                 let mut last_colour_len = 0;
 
                 // Go through the row until we find a run of same coloured pixels above the threshold
-                for x in i..row_pixels.len() {
+                for (x, &pixel) in row_pixels.iter().enumerate().skip(i) {
                     trace!(
-                        "Encoding literal copy. x: {:2}, row_pixels[i]: {:2X} ({:3})",
-                        x, row_pixels[x], row_pixels[x],
+                        "Encoding literal copy. x: {:2}, row_pixels[x]: {:2X} ({:3})",
+                        x, pixel, pixel,
                     );
-                    if row_pixels[x] == 0 {
+                    if pixel == 0 {
                         break;
                     }
-                    if row_pixels[x] != last_colour || last_colour_len == 0 {
+                    if pixel != last_colour || last_colour_len == 0 {
                         // New pixel or first pixel
-                        last_colour = row_pixels[x];
+                        last_colour = pixel;
                         last_colour_len = 1;
                     } else {
                         // Repetition of last seen pixel
@@ -869,7 +873,7 @@ fn files_to_grp(
     for (index, png_file) in png_files.iter().enumerate() {
         let image = png_to_pixels(png_file.as_str(), palette).in_file(png_file)?;
         validate_war1_frame_size(compression_type, &image).in_file(png_file)?;
-        let reuse_key = make_frame_reuse_key(&compression_type, &image);
+        let reuse_key = make_frame_reuse_key(compression_type, &image);
 
         max_width  = std::cmp::max(max_width,  image.original_width);
         max_height = std::cmp::max(max_height, image.original_height);
@@ -888,7 +892,7 @@ fn files_to_grp(
             });
 
         } else {
-            let grp_frame = png_to_grpframe(image, image_data_offset, &compression_type).in_file(png_file)?;
+            let grp_frame = png_to_grpframe(image, image_data_offset, compression_type).in_file(png_file)?;
 
             image_data_offset += grp_frame.grp_frame_len() as u32;
             if offset_is_extended(image_data_offset) {
@@ -1057,7 +1061,7 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
         &palette,
         header.max_width  as u32,
         header.max_height as u32,
-        &args,
+        args,
     )
 }
 
@@ -1375,7 +1379,7 @@ mod tests {
         let (header, war1_style) = read_grp_header(&mut cursor)?;
         cursor.seek(SeekFrom::Start(header_len))?;
         let result = read_grp_frames(&mut cursor, 1, GrpType::Uncompressed);
-        assert_eq!(war1_style, false);
+        assert!(!war1_style);
         assert_eq!(header.frame_count, 1);
         assert_eq!(header.max_width,   1);
         assert_eq!(header.max_height,  1);
@@ -1398,7 +1402,7 @@ mod tests {
         let (header, war1_style) = read_grp_header(&mut cursor)?;
         cursor.seek(SeekFrom::Start(header_len))?;
         let result = read_grp_frames(&mut cursor, 1, GrpType::War1);
-        assert_eq!(war1_style, true);
+        assert!(war1_style);
         assert_eq!(header.frame_count, 1);
         assert_eq!(header.max_width,   1);
         assert_eq!(header.max_height,  1);
@@ -2517,6 +2521,3 @@ mod tests {
         }
     }
 }
-
-const EXTENDED_OFFSET_BIT: u32 = 0x8000_0000;
-pub const EXTENDED_IMAGE_WIDTH: u16 = 256;

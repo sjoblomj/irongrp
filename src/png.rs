@@ -58,7 +58,7 @@ pub fn render_and_save_frames_to_png(
             let base_x = col * max_frame_width;
             let base_y = row * max_frame_height;
 
-            let temp_img = image_to_buffer(frame, &palette, max_frame_width, max_frame_height, args.use_transparency)?;
+            let temp_img = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency)?;
 
             for y in 0..max_frame_height {
                 for x in 0..max_frame_width {
@@ -82,7 +82,7 @@ pub fn render_and_save_frames_to_png(
             if args.frame_number.is_some() && args.frame_number != Some(i as u16) {
                 continue;
             }
-            let buffer = image_to_buffer(frame, &palette, max_frame_width, max_frame_height, args.use_transparency)?;
+            let buffer = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency)?;
 
             let grp_type = if frame.image_data.grp_type == GrpType::Normal {
                 ""

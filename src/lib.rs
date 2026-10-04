@@ -258,7 +258,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    // Linux only: macOS does not allow file names that are not valid UTF-8, nor does Windows
+    #[cfg(target_os = "linux")]
     fn list_png_files_rejects_png_whose_name_is_not_valid_utf8() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
@@ -276,7 +277,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    // Linux only: macOS does not allow file names that are not valid UTF-8, nor does Windows
+    #[cfg(target_os = "linux")]
     fn list_png_files_ignores_non_png_whose_name_is_not_valid_utf8() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
@@ -298,7 +300,9 @@ mod tests {
             std::fs::write(temp_dir.path().join(name), []).unwrap();
         }
         let files = list_png_files(temp_dir.path().to_str().unwrap()).unwrap();
-        let names: Vec<&str> = files.iter().map(|f| f.rsplit('/').next().unwrap()).collect();
+        let names: Vec<&str> = files.iter()
+            .map(|f| std::path::Path::new(f).file_name().unwrap().to_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["a.png", "b.PNG", "c.Png"]);
     }
 
