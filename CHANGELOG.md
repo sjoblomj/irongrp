@@ -45,6 +45,7 @@ All notable changes to this project will be documented in this file.
 - Corrected the decoding of instructions to copy 0 pixels in malformed GRPs, which skipped the following byte.
 - Converting PNGs to a GRP now fails with an error naming the file if a PNG's file name is not valid UTF-8, instead of silently leaving that frame out of the GRP.
 - Corrected the description of the automatic compression type detection in `--help` and the README: the PNG file names must contain "uncompressed_" or "war1_", including the underscore.
+- WarCraft I style GRPs with frames of extended width, which neither the games nor IronGRP create, are no longer accepted. They were read with the frames named as Uncompressed, so converting back gave an Uncompressed GRP. When a GRP can be read neither as WarCraft I style nor normally, the error now explains why for both.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

@@ -139,21 +139,26 @@ fn determine_grp_style<R: Read + Seek>(
     war1_max_height: u8,
 ) -> Result<bool> {
 
+    let mut war1_error = None;
     if war1_max_width != 0 && war1_max_height != 0 {
         // This is true for War1 GRPs and Extended GRPs. WarCraft I style GRPs are always
-        // uncompressed, so if the frame headers can be read in the War1 layout but the data
-        // is not uncompressed in it, then the GRP is not WarCraft I style.
-        let is_war1_style = try_reading_frame_headers(
-            file,
-            frame_count,
-            get_header_size(true),
-        ).is_ok() && detect_uncompressed(file, frame_count, true)?;
-        if is_war1_style {
-            return Ok(is_war1_style)
+        // uncompressed and have no extended frames, so if the frame headers can be read in the
+        // War1 layout but the data is not uncompressed in it, or a frame has an extended width,
+        // then the GRP is not WarCraft I style.
+        match try_reading_frame_headers(file, frame_count, true) {
+            Ok(()) if detect_uncompressed(file, frame_count, true)? => return Ok(true),
+            Ok(()) => {},
+            Err(e) => war1_error = Some(e),
         }
     }
-    try_reading_frame_headers(file, frame_count, get_header_size(false))?;
-    Ok(false)
+    match (try_reading_frame_headers(file, frame_count, false), war1_error) {
+        (Ok(()), _) => Ok(false),
+        // Neither layout works, so report why for both, as the GRP may have been meant as either
+        (Err(Error::InvalidGrp(normal)), Some(Error::InvalidGrp(war1))) => Err(Error::InvalidGrp(format!(
+            "{}. When read as WarCraft I style instead: {}", normal, war1,
+        ))),
+        (Err(e), _) => Err(e),
+    }
 }
 
 /// Reads exactly `buf.len()` bytes, reporting a truncated file as an invalid GRP
@@ -165,15 +170,17 @@ fn read_grp_bytes<R: Read>(file: &mut R, buf: &mut [u8], msg: &str) -> Result<()
     })
 }
 
-/// Reads all frame headers and checks that their image data can be within the file: after the
-/// frame header table, and with room for the smallest possible image data before the end of the
-/// file. Returns Error if not.
+/// Reads all frame headers, in the WarCraft I style layout or the normal one, and checks that
+/// their image data can be within the file: after the frame header table, and with room for the
+/// smallest possible image data before the end of the file. In the WarCraft I style layout, frames
+/// may not have an extended width. Returns Error if not.
 fn try_reading_frame_headers<R: Read + Seek>(
     file: &mut R,
     frame_count: u16,
-    start_pos: usize,
+    war1_style: bool,
 ) -> Result<()> {
 
+    let start_pos = get_header_size(war1_style);
     let file_len = file.seek(SeekFrom::End(0))?;
     let frame_headers_end = start_pos as u64 + frame_count as u64 * 8;
     for i in 0..frame_count {
@@ -191,6 +198,11 @@ fn try_reading_frame_headers<R: Read + Seek>(
 
         if width == 0 || height == 0 {
             return Err(Error::InvalidGrp(format!("Frame {} has zero width or height", i)));
+        }
+        if war1_style && offset_is_extended(image_data_offset) {
+            return Err(Error::InvalidGrp(format!(
+                "Frame {} has an extended width, which WarCraft I style GRPs do not support", i,
+            )));
         }
         if offset < frame_headers_end {
             return Err(Error::InvalidGrp(format!(
@@ -270,8 +282,7 @@ pub fn read_grp_frames<R: Read + Seek>(
             }
 
             let compression_type = if has_extended_size {
-                // There does not seem to be any War1 GRPs with extended size.
-                // The code here needs to be changed if there are.
+                // WarCraft I style GRPs with extended frames are not detected as such
                 GrpType::UncompressedExtended
             } else {
                 grp_type // Uncompressed or War1
@@ -1134,7 +1145,7 @@ mod tests {
         }
         assert!(file_len >= data.len(), "test setup: the file must fit the frame headers");
         data.resize(file_len, 0);
-        try_reading_frame_headers(&mut Cursor::new(data), frames.len() as u16, header_len)
+        try_reading_frame_headers(&mut Cursor::new(data), frames.len() as u16, header_len == get_header_size(true))
     }
 
     fn assert_invalid_grp(result: Result<()>, expected_message: &str) {
@@ -1192,6 +1203,52 @@ mod tests {
         assert_invalid_grp(check_frame_headers(6, &extended(13), 14 + 300), "frame header table");
         // Compressed, a 1 row frame needs at least 3 bytes, and Uncompressed, 300 bytes
         assert_invalid_grp(check_frame_headers(6, &extended(14), 14 + 2), "too little room");
+    }
+
+    #[test]
+    fn frame_headers_reject_extended_frames_only_in_the_war1_layout() {
+        // A 300x1 extended frame (width 44 in the file) with 300 bytes of image data
+        for (header_len, war1_style) in [(4, true), (6, false)] {
+            let offset = header_len as u32 + 8;
+            let frames = [(44, 1, offset | EXTENDED_OFFSET_BIT)];
+            let result = check_frame_headers(header_len, &frames, offset as usize + 300);
+            if war1_style {
+                assert_invalid_grp(result, "Frame 0 has an extended width, which WarCraft I style GRPs do not support");
+            } else {
+                assert!(result.is_ok(), "{:?}", result);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_war1_grp_with_extended_frame_explaining_both_layouts() {
+        // A War1 header with one 300x2 frame: width 44 with the extended bit set
+        let mut data = vec![0x01, 0x00, 0xFF, 0x02]; // 1 frame, max size 255x2 as u8
+        data.extend([0, 0, 44, 2]);
+        data.extend((12u32 | EXTENDED_OFFSET_BIT).to_le_bytes());
+        data.extend([7; 600]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("war1_extended.grp");
+        std::fs::write(&path, data).unwrap();
+
+        let err = read_grp_file(&path).expect_err("expected the GRP to be rejected");
+        assert!(matches!(err.root(), Error::InvalidGrp(_)));
+        let message = err.to_string();
+        // In the normal layout, the frame header starts 2 bytes later, giving a height of 0
+        assert!(message.contains("invalid GRP: Frame 0 has zero width or height. "), "{}", message);
+        assert!(message.contains("When read as WarCraft I style instead: Frame 0 has an extended width"), "{}", message);
+    }
+
+    #[test]
+    fn reports_only_the_normal_layout_error_when_war1_layout_was_not_tried() {
+        use std::io::Cursor;
+        // Max width 0x0100 has a zero low byte, so the War1 layout is not tried
+        let mut data = vec![0x01, 0x00, 0x00, 0x01, 0x01, 0x00];
+        data.extend([0, 0, 0, 1, 14, 0, 0, 0]); // Frame 0 with width 0
+        data.extend([0; 10]);
+        let err = read_grp_header(&mut Cursor::new(data)).expect_err("expected the GRP to be rejected");
+        assert_eq!(err.to_string(), "invalid GRP: Frame 0 has zero width or height");
     }
 
     #[test]
@@ -1408,7 +1465,7 @@ mod tests {
 
         // The War1 layout is valid as far as the frame headers go
         let mut cursor = std::io::Cursor::new(&data);
-        assert!(try_reading_frame_headers(&mut cursor, 1, get_header_size(true)).is_ok());
+        assert!(try_reading_frame_headers(&mut cursor, 1, true).is_ok());
 
         let (header, grp_type, frames) = read_grp_file(&path).unwrap();
         assert_eq!(grp_type, GrpType::Normal);
