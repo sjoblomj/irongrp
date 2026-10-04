@@ -112,3 +112,13 @@ fn grp_without_frames_is_rejected() {
         );
     }
 }
+
+#[test]
+fn help_describes_how_the_compression_type_is_detected() {
+    let output = irongrp().arg("--help").output().expect("failed to run irongrp");
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    // clap may wrap the help text, so compare it with whitespace collapsed
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains(r#"contains "uncompressed_" or "war1_""#), "{}", help);
+}

@@ -2350,6 +2350,46 @@ mod tests {
     }
 
     #[test]
+    fn determine_compression_type_requires_the_underscore() {
+        for name in ["uncompressed.png", "uncompressedframe_000.png", "war1.png", "war1frame_000.png"] {
+            let files = vec![format!("sprites/{}", name)];
+            assert_eq!(
+                determine_compression_type(&files, &CompressionType::Auto),
+                CompressionType::Normal,
+                "for {}", name,
+            );
+        }
+    }
+
+    #[test]
+    fn determine_compression_type_matches_anywhere_in_the_file_name() {
+        for (name, expected) in [
+            ("my_uncompressed_frame.png", CompressionType::Uncompressed),
+            ("orc_war1_frame_000.png",    CompressionType::War1),
+        ] {
+            let files = vec![format!("sprites/{}", name)];
+            assert_eq!(determine_compression_type(&files, &CompressionType::Auto), expected, "for {}", name);
+        }
+    }
+
+    #[test]
+    fn determine_compression_type_uses_any_matching_file_and_prefers_uncompressed() {
+        let files = vec![
+            "sprites/frame_000.png".to_string(),
+            "sprites/war1_frame_001.png".to_string(),
+            "sprites/uncompressed_frame_002.png".to_string(),
+        ];
+        assert_eq!(
+            determine_compression_type(&files, &CompressionType::Auto),
+            CompressionType::Uncompressed,
+        );
+        assert_eq!(
+            determine_compression_type(&files[..2], &CompressionType::Auto),
+            CompressionType::War1,
+        );
+    }
+
+    #[test]
     fn determine_compression_type_defaults_to_normal_for_plain_file_names() {
         let files = vec!["sprites/frame_000.png".to_string()];
         assert_eq!(

@@ -44,6 +44,7 @@ All notable changes to this project will be documented in this file.
 - Malformed image data in Normal GRPs is now reported with one warning per frame, naming the problems and the rows affected, instead of one error log line per problem. The image is still decoded as well as possible.
 - Corrected the decoding of instructions to copy 0 pixels in malformed GRPs, which skipped the following byte.
 - Converting PNGs to a GRP now fails with an error naming the file if a PNG's file name is not valid UTF-8, instead of silently leaving that frame out of the GRP.
+- Corrected the description of the automatic compression type detection in `--help` and the README: the PNG file names must contain "uncompressed_" or "war1_", including the underscore.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
