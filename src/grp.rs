@@ -2,7 +2,7 @@ use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::error::{Error, InFile, Result};
 use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -284,12 +284,19 @@ pub fn read_grp_frames<R: Read + Seek>(
                 compression_type,
             )?
         } else {
-            read_image_data(
+            let (image_data, problems) = read_image_data(
                 file,
                 width  as u16,
                 height as u16,
                 image_data_offset,
-            )?
+            )?;
+            if !problems.is_empty() {
+                warn!(
+                    "Frame {} has malformed image data, which was decoded as well as possible: {}",
+                    i, describe_row_problems(&problems),
+                );
+            }
+            image_data
         };
 
         let grp_frame = GrpFrame {
@@ -359,13 +366,14 @@ fn read_uncompressed_pixels(width: u16, height: u16, pixels: Vec<u8>) -> Vec<Vec
     raw_row_data
 }
 
-/// Reads row offsets and decodes image data
+/// Reads row offsets and decodes image data. Also returns the problems found in rows of
+/// malformed image data, as (row, problem).
 fn read_image_data<R: Read + Seek>(
     file:   &mut R,
     width:  u16,
     height: u16,
     image_data_offset: u32,
-) -> Result<ImageData> {
+) -> Result<(ImageData, Vec<(usize, RowProblem)>)> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
     let data_len = file_len
@@ -390,6 +398,7 @@ fn read_image_data<R: Read + Seek>(
 
     let mut raw_row_data = Vec::with_capacity(height as usize);
     let mut pixels = vec![0; (width * height) as usize];
+    let mut problems = Vec::new();
 
     for (row, &row_offset) in row_offsets.iter().enumerate() {
         if row_offset as usize >= data_block.len() {
@@ -403,112 +412,145 @@ fn read_image_data<R: Read + Seek>(
             row, width, row_offset, row_data.len(),
         );
 
-        let (decoded_row, encoded_length) = decode_grp_rle_row(row_data, width);
-
-        if row_offset as usize + encoded_length > data_block.len() {
-            return Err(Error::InvalidGrp(format!(
-                "Row {} encoded length goes beyond buffer: {} + {} > {}",
-                row, row_offset, encoded_length, data_block.len(),
-            )));
-        }
-
-        raw_row_data.push(row_data[..encoded_length].to_vec());
+        let decoded_row = decode_grp_rle_row(row_data, width);
+        raw_row_data.push(row_data[..decoded_row.encoded_len].to_vec());
+        problems.extend(decoded_row.problems.iter().map(|&problem| (row, problem)));
 
         let start = row * width as usize;
-        pixels[start .. start + decoded_row.len()].copy_from_slice(&decoded_row);
+        pixels[start .. start + decoded_row.pixels.len()].copy_from_slice(&decoded_row.pixels);
     }
 
-    Ok(ImageData {
+    let image_data = ImageData {
         row_offsets,
         raw_row_data,
         converted_pixels: pixels,
         grp_type: GrpType::Normal,
-    })
+    };
+    Ok((image_data, problems))
 }
 
-/// Decodes an RLE-compressed row of pixels
-fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
-    let mut line_pixels = vec![0; image_width as usize]; // Initialize with transparent pixels (palette index 0)
-    let mut x = 0; // Position in output row
-    let mut data_offset = 0; // Position in input data
+/// A problem found when decoding a row of malformed RLE-compressed image data
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RowProblem {
+    /// A run of pixels extends past the frame width. It is cut off at the frame edge.
+    RunPastWidth,
+    /// The data ends before an instruction is complete, or before the row is filled.
+    /// The rest of the row is left transparent.
+    MissingData,
+    /// An instruction to copy 0 pixels. It is skipped.
+    ZeroLengthCopy,
+}
 
-    while x < image_width as usize && data_offset < line_data.len() {
-        let control_byte = line_data[data_offset];
-        data_offset += 1;
+impl RowProblem {
+    fn description(self) -> &'static str {
+        match self {
+            RowProblem::RunPastWidth   => "a run of pixels extends past the frame width and was cut off",
+            RowProblem::MissingData    => "the image data ends before the row is complete, so the rest is transparent",
+            RowProblem::ZeroLengthCopy => "an instruction to copy 0 pixels was skipped",
+        }
+    }
+}
+
+/// A row of pixels decoded from RLE-compressed data
+struct DecodedRow {
+    pixels: Vec<u8>,
+    /// The number of bytes of encoded data that the row took up
+    encoded_len: usize,
+    /// The problems found if the data is malformed, each listed once
+    problems: Vec<RowProblem>,
+}
+
+/// Decodes an RLE-compressed row of pixels. Malformed data is decoded as well as possible, and
+/// the problems found are returned along with the pixels.
+fn decode_grp_rle_row(line_data: &[u8], image_width: u16) -> DecodedRow {
+    let width = image_width as usize;
+    let mut pixels = vec![0; width]; // Initialize with transparent pixels (palette index 0)
+    let mut problems = Vec::new();
+    let mut add_problem = |problem| if !problems.contains(&problem) { problems.push(problem) };
+    let mut x = 0;   // Position in output row
+    let mut pos = 0; // Position in input data
+
+    while x < width {
+        let Some(&control_byte) = line_data.get(pos) else {
+            add_problem(RowProblem::MissingData);
+            break;
+        };
+        pos += 1;
 
         if control_byte & 0x80 != 0 { // Transparent - skip x pixels
             let skip = (control_byte & 0x7F) as usize;
-            x += skip;
             trace!(
                 "Decoding transparent byte (0x{:0>2X}). Skipping 0x{:0>2X} ({}) pixels.",
                 control_byte, skip, skip,
             );
+            if x + skip > width {
+                add_problem(RowProblem::RunPastWidth);
+            }
+            x += skip;
 
         } else if control_byte & 0x40 != 0 { // Run-length encoding (repeat same colour X times)
-            let run_length  = (control_byte & 0x3F) as usize;
-            if data_offset >= line_data.len() { // Safety check
-                error!(
-                    "Decoding error: Requested offset ({}) is greater than line length ({}).",
-                    data_offset, line_data.len(),
-                );
+            let run_length = (control_byte & 0x3F) as usize;
+            let Some(&colour_index) = line_data.get(pos) else {
+                add_problem(RowProblem::MissingData);
                 break;
-            }
-            let colour_index = line_data[data_offset]; // Colour index from palette
-            data_offset += 1;
+            };
+            pos += 1;
             trace!(
-                "Decoding control byte 0x{:0>2X} 0x{:0>2X}. data_offset: 0x{:0>2X} ({}). \
-                Pixel with palette index {} will be repeated {} times.",
-                control_byte, colour_index, data_offset, data_offset, colour_index, run_length,
+                "Decoding control byte 0x{:0>2X} 0x{:0>2X}. Pixel with palette index {} will be repeated {} times.",
+                control_byte, colour_index, colour_index, run_length,
             );
-
-            for _ in 0..run_length {
-                if x >= image_width as usize {
-                    error!(
-                        "Decoding error: X position ({}) is greater than image width ({}).",
-                        x, image_width,
-                    );
-                    break;
-                }
-                line_pixels[x] = colour_index;
-                x += 1;
+            if x + run_length > width {
+                add_problem(RowProblem::RunPastWidth);
             }
+            pixels[x..(x + run_length).min(width)].fill(colour_index);
+            x += run_length;
 
         } else { // Normal - copy x pixels directly
             let copy_length = control_byte as usize;
-
-            trace!(
-                "Normal decoding (0x{:0>2X}). Will copy {} pixels.",
-                control_byte, copy_length,
-            );
-            let mut bytes_for_logging = "".to_string();
-
-            for _ in 0..copy_length {
-                if x >= image_width as usize || data_offset >= line_data.len() {
-                    error!(
-                        "Decoding error: X position ({}) is greater than image width ({}), \
-                        or data offset ({}) is greater than line length ({}).",
-                        x, image_width, data_offset, line_data.len(),
-                    );
-                    break;
-                }
-                line_pixels[x] = line_data[data_offset];
-                bytes_for_logging.push_str(&format!("{:02X} ", line_data[data_offset]));
-                x += 1;
-                data_offset += 1;
-            }
             if copy_length == 0 {
-                data_offset += 1;
-                error!("Read instruction to copy 0 pixels - Stepping over");
-            } else {
-                trace!(
-                    "Normal decoding of {} bytes: {}",
-                    copy_length, bytes_for_logging,
-                );
+                trace!("Read instruction to copy 0 pixels - skipping it");
+                add_problem(RowProblem::ZeroLengthCopy);
+                continue;
             }
+            let available = &line_data[pos..(pos + copy_length).min(line_data.len())];
+            if available.len() < copy_length {
+                add_problem(RowProblem::MissingData);
+            }
+            if x + copy_length > width {
+                add_problem(RowProblem::RunPastWidth);
+            }
+            let copied = available.len().min(width - x);
+            pixels[x..x + copied].copy_from_slice(&available[..copied]);
+            if log::log_enabled!(log::Level::Trace) {
+                let bytes: Vec<String> = available.iter().map(|b| format!("{:02X}", b)).collect();
+                trace!("Normal decoding of {} bytes: {}", copy_length, bytes.join(" "));
+            }
+            pos += available.len();
+            x += copy_length;
         }
     }
 
-    (line_pixels, data_offset)
+    DecodedRow { pixels, encoded_len: pos, problems }
+}
+
+/// Describes the problems found when decoding the rows of a frame, given as (row, problem)
+fn describe_row_problems(problems: &[(usize, RowProblem)]) -> String {
+    const MAX_ROWS_LISTED: usize = 10;
+    let mut kinds: Vec<RowProblem> = problems.iter().map(|&(_, problem)| problem).collect();
+    kinds.sort();
+    kinds.dedup();
+
+    kinds.iter().map(|&kind| {
+        let rows: Vec<usize> = problems.iter().filter(|&&(_, p)| p == kind).map(|&(row, _)| row).collect();
+        let mut listed: Vec<String> = rows.iter().take(MAX_ROWS_LISTED).map(|row| row.to_string()).collect();
+        if rows.len() > MAX_ROWS_LISTED {
+            listed.push("...".to_string());
+        }
+        format!(
+            "{} ({} {}: {})",
+            kind.description(), rows.len(), if rows.len() == 1 { "row" } else { "rows" }, listed.join(", "),
+        )
+    }).collect::<Vec<String>>().join("; ")
 }
 
 
@@ -1542,11 +1584,18 @@ mod tests {
         assert!(matches!(result, Ok(false)));
     }
 
+    /// Decodes a row of valid RLE-compressed data, asserting that no problems were found
+    fn decode_valid_row(line_data: &[u8], image_width: u16) -> (Vec<u8>, usize) {
+        let decoded = decode_grp_rle_row(line_data, image_width);
+        assert_eq!(decoded.problems, vec![], "unexpected problems decoding {:02X?}", line_data);
+        (decoded.pixels, decoded.encoded_len)
+    }
+
     #[test]
     fn test_decode_transparent_only() {
         let data = vec![0x85]; // skip 5 transparent pixels
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 5);
+        let (result, encoded_length) = decode_valid_row(&data, 5);
 
         assert_eq!(result, vec![0, 0, 0, 0, 0]);
         assert_eq!(encoded_length, data.len());
@@ -1556,7 +1605,7 @@ mod tests {
     fn test_decode_solid_colour_run() {
         let data = vec![0x42, 7]; // repeat colour 7 for 2 pixels
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 2);
+        let (result, encoded_length) = decode_valid_row(&data, 2);
 
         assert_eq!(result, vec![7, 7]);
         assert_eq!(encoded_length, data.len());
@@ -1566,7 +1615,7 @@ mod tests {
     fn test_decode_raw_pixels() {
         let data = vec![3, 5, 6, 7]; // copy 3 pixels directly
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
+        let (result, encoded_length) = decode_valid_row(&data, 3);
 
         assert_eq!(result, vec![5, 6, 7]);
         assert_eq!(encoded_length, data.len());
@@ -1577,7 +1626,7 @@ mod tests {
         let data = vec![0x81, 0x43, 9, 2, 8, 7];
         // skip 1 transparent, repeat 9 for 3, then copy 2 pixels (8, 7)
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 6);
+        let (result, encoded_length) = decode_valid_row(&data, 6);
 
         assert_eq!(result, vec![0, 9, 9, 9, 8, 7]);
         assert_eq!(encoded_length, data.len());
@@ -1695,7 +1744,7 @@ mod tests {
         let original = vec![0x8F, 0x02, 0x8A, 0x40, 0x48, 0x8B, 0x04, 0x40, 0x40, 0x40, 0x8A, 0x8F];
         let width = 44;
 
-        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
+        let (decoded, encoded_length) = decode_valid_row(&original, width);
         let encoded_normal = encode_grp_rle_row(&decoded, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
@@ -1712,7 +1761,7 @@ mod tests {
             0x77, 0x2B, 0x42, 0x43, 0x0A, 0x44, 0x08, 0x06, 0x0A, 0xA1, 0x8C, 0x40, 0x0B, 0x0F, 0x81];
         let width = 44;
 
-        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
+        let (decoded, encoded_length) = decode_valid_row(&original, width);
         let encoded_normal = encode_grp_rle_row(&decoded, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
@@ -1739,7 +1788,7 @@ mod tests {
             0x97, 0x95, 0x8A, 0x81];
         let width = 87;
 
-        let (decoded, encoded_length) = decode_grp_rle_row(&original, width);
+        let (decoded, encoded_length) = decode_valid_row(&original, width);
         let encoded_normal = encode_grp_rle_row(&decoded, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&decoded, &CompressionType::Optimised);
 
@@ -1763,8 +1812,8 @@ mod tests {
 
         let encoded_normal = encode_grp_rle_row(&original, &CompressionType::Normal);
         let encoded_optim  = encode_grp_rle_row(&original, &CompressionType::Optimised);
-        let (decoded_normal, encoded_normal_length) = decode_grp_rle_row(&encoded_normal, width);
-        let (decoded_optim , encoded_optim_length)  = decode_grp_rle_row(&encoded_optim,  width);
+        let (decoded_normal, encoded_normal_length) = decode_valid_row(&encoded_normal, width);
+        let (decoded_optim , encoded_optim_length)  = decode_valid_row(&encoded_optim,  width);
 
         assert_eq!(original, decoded_normal);
         assert_eq!(original, decoded_optim);
@@ -1807,11 +1856,12 @@ mod tests {
         // Claims to repeat a colour, but colour byte is missing
         let data = vec![0x41]; // run-length of 1, but no colour follows
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 1);
+        let decoded = decode_grp_rle_row(&data, 1);
 
-        // Expect a fallback to default pixel value (0)
-        assert_eq!(result, vec![0]);
-        assert_eq!(encoded_length, data.len());
+        // The pixel is left transparent (0)
+        assert_eq!(decoded.pixels, vec![0]);
+        assert_eq!(decoded.encoded_len, data.len());
+        assert_eq!(decoded.problems, vec![RowProblem::MissingData]);
     }
 
     #[test]
@@ -1819,11 +1869,12 @@ mod tests {
         // Claims to repeat 5 pixels but only room for 3
         let data = vec![0x45, 7]; // run-length of 5 with colour 7
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
+        let decoded = decode_grp_rle_row(&data, 3);
 
         // Should clamp at width
-        assert_eq!(result, vec![7, 7, 7]);
-        assert_eq!(encoded_length, data.len());
+        assert_eq!(decoded.pixels, vec![7, 7, 7]);
+        assert_eq!(decoded.encoded_len, data.len());
+        assert_eq!(decoded.problems, vec![RowProblem::RunPastWidth]);
     }
 
     #[test]
@@ -1831,10 +1882,107 @@ mod tests {
         // Claims to copy 3 pixels but only 2 are present
         let data = vec![3, 1, 2];
 
-        let (result, encoded_length) = decode_grp_rle_row(&data, 3);
+        let decoded = decode_grp_rle_row(&data, 3);
 
-        assert_eq!(result, vec![1, 2, 0]);
-        assert_eq!(encoded_length, data.len());
+        assert_eq!(decoded.pixels, vec![1, 2, 0]);
+        assert_eq!(decoded.encoded_len, data.len());
+        assert_eq!(decoded.problems, vec![RowProblem::MissingData]);
+    }
+
+    #[test]
+    fn decode_literal_copy_past_width_consumes_the_whole_instruction() {
+        // Copies 4 pixels into a row 3 wide, followed by data of the next row
+        let data = vec![4, 1, 2, 3, 4, 0x85];
+
+        let decoded = decode_grp_rle_row(&data, 3);
+
+        assert_eq!(decoded.pixels, vec![1, 2, 3]);
+        assert_eq!(decoded.encoded_len, 5);
+        assert_eq!(decoded.problems, vec![RowProblem::RunPastWidth]);
+    }
+
+    #[test]
+    fn decode_transparent_run_past_width_is_a_problem() {
+        let decoded = decode_grp_rle_row(&[0x41, 9, 0x83], 3);
+        assert_eq!(decoded.pixels, vec![9, 0, 0]);
+        assert_eq!(decoded.problems, vec![RowProblem::RunPastWidth]);
+    }
+
+    #[test]
+    fn decode_data_ending_before_row_is_filled_is_a_problem() {
+        // Data for 2 pixels in a row 5 wide
+        let decoded = decode_grp_rle_row(&[0x42, 9], 5);
+        assert_eq!(decoded.pixels, vec![9, 9, 0, 0, 0]);
+        assert_eq!(decoded.encoded_len, 2);
+        assert_eq!(decoded.problems, vec![RowProblem::MissingData]);
+
+        let decoded = decode_grp_rle_row(&[], 2);
+        assert_eq!(decoded.pixels, vec![0, 0]);
+        assert_eq!(decoded.problems, vec![RowProblem::MissingData]);
+    }
+
+    #[test]
+    fn decode_zero_length_copy_is_skipped_without_consuming_the_next_byte() {
+        // Copy 0 pixels, then repeat colour 9 three times. Previously, the byte after the
+        // copy instruction (0x43) was skipped too, so 9 was read as the next instruction.
+        let data = vec![0x00, 0x43, 9];
+
+        let decoded = decode_grp_rle_row(&data, 3);
+
+        assert_eq!(decoded.pixels, vec![9, 9, 9]);
+        assert_eq!(decoded.encoded_len, data.len());
+        assert_eq!(decoded.problems, vec![RowProblem::ZeroLengthCopy]);
+    }
+
+    #[test]
+    fn decode_lists_each_problem_once_in_the_order_found() {
+        // Two 0-length copies, then a run past the width
+        let decoded = decode_grp_rle_row(&[0x00, 0x00, 0x45, 7], 3);
+        assert_eq!(decoded.pixels, vec![7, 7, 7]);
+        assert_eq!(decoded.problems, vec![RowProblem::ZeroLengthCopy, RowProblem::RunPastWidth]);
+    }
+
+    #[test]
+    fn describes_row_problems_by_kind_with_the_rows_affected() {
+        let problems = vec![
+            (16, RowProblem::RunPastWidth),
+            (3,  RowProblem::ZeroLengthCopy),
+            (17, RowProblem::RunPastWidth),
+        ];
+        assert_eq!(
+            describe_row_problems(&problems),
+            "a run of pixels extends past the frame width and was cut off (2 rows: 16, 17); \
+            an instruction to copy 0 pixels was skipped (1 row: 3)",
+        );
+    }
+
+    #[test]
+    fn describes_at_most_ten_rows_per_kind_of_problem() {
+        let problems: Vec<(usize, RowProblem)> = (0..12).map(|row| (row, RowProblem::MissingData)).collect();
+        assert_eq!(
+            describe_row_problems(&problems),
+            "the image data ends before the row is complete, so the rest is transparent \
+            (12 rows: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ...)",
+        );
+    }
+
+    #[test]
+    fn reads_frames_with_malformed_rows_as_well_as_possible() {
+        // A Normal GRP with one 3x2 frame. Row 0 has a run past the width, row 1 a 0-length copy.
+        let mut data = vec![0x01, 0x00, 0x03, 0x00, 0x02, 0x00]; // 1 frame, max size 3x2
+        data.extend([0, 0, 3, 2, 14, 0, 0, 0]);
+        data.extend([4, 0, 6, 0]);       // Row offsets
+        data.extend([0x44, 7]);          // Row 0: colour 7 four times, in a row 3 wide
+        data.extend([0x00, 0x43, 8]);    // Row 1: copy 0 pixels, then colour 8 three times
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("malformed.grp");
+        std::fs::write(&path, data).unwrap();
+
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::Normal);
+        assert_eq!(frames[0].image_data.converted_pixels, vec![7, 7, 7, 8, 8, 8]);
+        assert_eq!(frames[0].image_data.raw_row_data, vec![vec![0x44, 7], vec![0x00, 0x43, 8]]);
     }
 
 
@@ -2232,8 +2380,8 @@ mod tests {
         for row in test_cases {
             let encoded_normal = encode_grp_rle_row(&row, &CompressionType::Normal);
             let encoded_optim  = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let (decoded_normal, encoded_normal_length) = decode_grp_rle_row(&encoded_normal, row.len() as u16);
-            let (decoded_optim , encoded_optim_length)  = decode_grp_rle_row(&encoded_optim,  row.len() as u16);
+            let (decoded_normal, encoded_normal_length) = decode_valid_row(&encoded_normal, row.len() as u16);
+            let (decoded_optim , encoded_optim_length)  = decode_valid_row(&encoded_optim,  row.len() as u16);
 
             assert_eq!(decoded_normal, row);
             assert_eq!(decoded_optim,  row);
@@ -2257,7 +2405,7 @@ mod tests {
         fn prop_encode_decode_roundtrip_normal(row in proptest::collection::vec(0u8..=255, 0..256)) {
             let width = row.len();
             let encoded = encode_grp_rle_row(&row, &CompressionType::Normal);
-            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width as u16);
+            let (decoded, encoded_length) = decode_valid_row(&encoded, width as u16);
             prop_assert_eq!(decoded, row);
             prop_assert_eq!(encoded_length, encoded.len());
         }
@@ -2266,7 +2414,7 @@ mod tests {
         fn prop_encode_decode_roundtrip_optimised(row in proptest::collection::vec(0u8..=255, 0..256)) {
             let width = row.len();
             let encoded = encode_grp_rle_row(&row, &CompressionType::Optimised);
-            let (decoded, encoded_length) = decode_grp_rle_row(&encoded, width as u16);
+            let (decoded, encoded_length) = decode_valid_row(&encoded, width as u16);
             prop_assert_eq!(decoded, row);
             prop_assert_eq!(encoded_length, encoded.len());
         }

@@ -41,6 +41,8 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where `grp-to-png` failed, possibly after writing some of the PNGs, on GRPs whose header gives a max width or height smaller than the frames extend to. The PNGs are now enlarged to fit all frames, with a warning.
 - GRPs with 0 frames are now rejected with the error "The GRP has no frames". Previously, such files were rejected as too short if they were 6 bytes, while longer files beginning with two zero bytes, such as many non-GRP game files, were accepted as GRPs.
 - Stricter validation of the frame headers when reading a GRP: image data offsets pointing into the header or the frame header table, at the end of the file, or too close to the end of the file to hold the frame's image data are now rejected.
+- Malformed image data in Normal GRPs is now reported with one warning per frame, naming the problems and the rows affected, instead of one error log line per problem. The image is still decoded as well as possible.
+- Corrected the decoding of instructions to copy 0 pixels in malformed GRPs, which skipped the following byte.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
