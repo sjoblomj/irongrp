@@ -913,9 +913,11 @@ pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war
     let file_len = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(get_header_size(war1_style) as u64))?;
 
-    let mut seen_offsets  = HashSet::new();
-    let mut first_offset  = 0;
-    let mut total_frame_size = 0;
+    // In uncompressed GRPs, the image data of all frames (shared data counted once) fills the
+    // file exactly, from the lowest image data offset to the end.
+    let mut seen_offsets = HashSet::new();
+    let mut min_offset: Option<u64> = None;
+    let mut total_frame_size: u64 = 0;
 
     for _ in 0..header.frame_count {
 
@@ -927,17 +929,15 @@ pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war
         let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
         let (width, offset) = adjust_width_and_offset_if_extended_when_decoding(w, image_data_offset);
+        let offset = offset as u64;
 
         if seen_offsets.insert(offset) {
-            total_frame_size += width as u32 * height as u32;
+            total_frame_size += width as u64 * height as u64;
         }
-
-        if first_offset == 0 {
-            first_offset = offset;
-        }
+        min_offset = Some(min_offset.map_or(offset, |min| min.min(offset)));
     }
 
-    let is_uncompressed = first_offset + total_frame_size == file_len as u32;
+    let is_uncompressed = min_offset.is_some_and(|min| min + total_frame_size == file_len);
     let msg = format!("Is uncompressed: {}. Is WarCraft I style: {}", is_uncompressed, war1_style);
     if is_uncompressed {
         warn!("{}", msg);
@@ -1222,6 +1222,51 @@ mod tests {
                 assert_eq!(frame.image_data.converted_pixels, vec![0x71], "frame {}", i);
             }
         }
+    }
+
+    #[test]
+    fn detects_uncompressed_grp_with_image_data_not_in_frame_order() {
+        // Two 2x2 frames, where the image data of frame 1 comes before that of frame 0
+        let mut data = vec![0x02, 0x00, 0x02, 0x00, 0x02, 0x00]; // 2 frames, max size 2x2
+        data.extend([0, 0, 2, 2, 26, 0, 0, 0]); // Frame 0 at offset 6 + 2 * 8 + 4 = 26
+        data.extend([0, 0, 2, 2, 22, 0, 0, 0]); // Frame 1 at offset 22
+        data.extend([5, 6, 7, 8]);              // Frame 1
+        data.extend([1, 2, 3, 4]);              // Frame 0
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("reordered.grp");
+        std::fs::write(&path, data).unwrap();
+
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::Uncompressed);
+        assert_eq!(frames[0].image_data.converted_pixels, vec![1, 2, 3, 4]);
+        assert_eq!(frames[1].image_data.converted_pixels, vec![5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn detect_uncompressed_does_not_overflow_for_huge_total_frame_size() {
+        use std::io::Cursor;
+        // u16::MAX extended frames of 511x255 pixels, each with its own image data offset,
+        // add up to more than u32::MAX bytes of image data
+        let frame_count = u16::MAX;
+        let mut data = vec![0u8; 6];
+        for i in 0..frame_count as u32 {
+            data.extend([0, 0, 255, 255]);
+            data.extend((i | EXTENDED_OFFSET_BIT).to_le_bytes());
+        }
+        let header = GrpHeader { frame_count, max_width: 511, max_height: 255 };
+
+        let result = detect_uncompressed(&mut Cursor::new(data), &header, false);
+
+        assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
+    fn detect_uncompressed_is_false_for_grp_without_frames() {
+        use std::io::Cursor;
+        let header = GrpHeader { frame_count: 0, max_width: 0, max_height: 0 };
+        let result = detect_uncompressed(&mut Cursor::new(vec![0u8; 6]), &header, false);
+        assert!(matches!(result, Ok(false)));
     }
 
     #[test]
