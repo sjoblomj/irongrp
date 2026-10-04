@@ -2,12 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.6] - unreleased
+## [0.6.0] - unreleased
 
 ### Added
 - Ability to specify and load palettes (up to 9) in the yazi integration.
 - Using `tempfile` for tests for added robustness.
 - .gitignore file
+- GitHub Actions workflows: CI running clippy and the tests on Linux, macOS and Windows, and releases building binaries for Linux, Windows and macOS when a version tag is pushed.
+- Icon for the Windows executable.
 
 ### Changed
 - Better handling of argument validation by using clap.
