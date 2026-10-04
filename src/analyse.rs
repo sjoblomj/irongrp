@@ -130,30 +130,25 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
 
 
     // Check for overlapping ranges
-    let mut has_printed_header = false;
-    let mut overlap_found = false;
-    for i in 1..used_ranges.len() {
-        let (prev_start, prev_end, prev_label) = &used_ranges[i - 1];
-        let (curr_start, curr_end, curr_label) = &used_ranges[i];
-        if curr_start < prev_end {
-            if !has_printed_header {
-                debug!("⚠ Overlapping ranges detected:");
-                has_printed_header = true;
-            }
-            debug!(
-                "[0x{:0>2X}]-[0x{:0>2X}] ({}) overlaps with [0x{:0>2X}]-[0x{:0>2X}] ({})",
-                prev_start, prev_end, prev_label, curr_start, curr_end, curr_label,
-            );
-            overlap_found = true;
-        }
+    let overlaps = overlapping_ranges(&used_ranges);
+    if !overlaps.is_empty() {
+        debug!("⚠ Overlapping ranges detected:");
     }
-    if !overlap_found {
+    for &(earlier, later) in &overlaps {
+        let (prev_start, prev_end, prev_label) = &used_ranges[earlier];
+        let (curr_start, curr_end, curr_label) = &used_ranges[later];
+        debug!(
+            "[0x{:0>2X}]-[0x{:0>2X}] ({}) overlaps with [0x{:0>2X}]-[0x{:0>2X}] ({})",
+            prev_start, prev_end, prev_label, curr_start, curr_end, curr_label,
+        );
+    }
+    if overlaps.is_empty() {
         info!("✔ No overlapping ranges detected");
     }
     println!();
 
 
-    has_printed_header = false;
+    let mut has_printed_header = false;
     let mut pos = 0;
     let mut any_gaps = false;
     for (start, end, _) in &used_ranges {
@@ -244,12 +239,35 @@ fn used_ranges(frames: &[GrpFrame], grp_type: GrpType) -> Vec<(u64, u64, String)
     used_ranges.push((0, header_size, format!("GRP Header ({} frames)", frames.len())));
     used_ranges.push((header_size, frame_headers_end, "Frame headers".to_string()));
 
+    // Frames that share image data have the same image data offset. Their image data is only
+    // stored once, so only add its ranges once, labelled with all the frames using it.
+    let mut frames_by_offset: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (frame_index, frame) in frames.iter().enumerate() {
+        frames_by_offset.entry(frame.decoded_image_data_offset() as u64).or_default().push(frame_index);
+    }
+
     for (frame_index, frame) in frames.iter().enumerate() {
         let data_offset = frame.decoded_image_data_offset() as u64;
-        let row_table_end = data_offset + (frame.image_data.row_offsets.len() * 2) as u64;
-        let label = format!("Frame {: >2} row offset table ({} rows)", frame_index, frame.height);
-        used_ranges.push((data_offset, row_table_end, label));
+        let frames_sharing = &frames_by_offset[&data_offset];
+        if frames_sharing[0] != frame_index {
+            continue; // Already added for the first frame using this image data
+        }
+        let frame_label = if frames_sharing.len() == 1 {
+            format!("Frame {: >2}", frame_index)
+        } else {
+            let indices: Vec<String> = frames_sharing.iter().map(|i| i.to_string()).collect();
+            format!("Frames {}", indices.join(", "))
+        };
 
+        if !frame.image_data.row_offsets.is_empty() { // Uncompressed GRPs have no row offset table
+            let row_table_end = data_offset + (frame.image_data.row_offsets.len() * 2) as u64;
+            let label = format!("{} row offset table ({} rows)", frame_label, frame.height);
+            used_ranges.push((data_offset, row_table_end, label));
+        }
+
+        // Identical rows of a Normal frame may share data, by having the same row offset.
+        // Such data is likewise only added once, labelled with all the rows using it.
+        let mut rows_by_range: Vec<((u64, u64), Vec<usize>)> = Vec::new();
         for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
             let row_offset = if frame.image_data.grp_type == GrpType::Normal {
                 frame.image_data.row_offsets[i] as u64
@@ -260,15 +278,46 @@ fn used_ranges(frames: &[GrpFrame], grp_type: GrpType) -> Vec<(u64, u64, String)
             };
 
             let start = data_offset + row_offset;
-            let end = start + row.len() as u64;
+            let range = (start, start + row.len() as u64);
+            match rows_by_range.iter_mut().find(|(r, _)| *r == range) {
+                Some((_, rows)) => rows.push(i),
+                None => rows_by_range.push((range, vec![i])),
+            }
+        }
+        for ((start, end), rows) in rows_by_range {
+            let rows_label = if rows.len() == 1 {
+                format!("row {: >2}", rows[0])
+            } else {
+                let indices: Vec<String> = rows.iter().map(|i| i.to_string()).collect();
+                format!("rows {}", indices.join(", "))
+            };
             used_ranges.push((start, end, format!(
-                "Frame {: >2}: Image data for row {: >2} ({} bytes)",
-                frame_index, i, end - start,
+                "{}: Image data for {} ({} bytes)",
+                frame_label, rows_label, end - start,
             )));
         }
     }
     used_ranges.sort_by_key(|r| r.0);
     used_ranges
+}
+
+/// Returns the overlapping ranges, as pairs of indices into `ranges`, which must be sorted by
+/// start. Each range is compared with the earlier range that extends the furthest, so a range
+/// overlapping any earlier range is found, not only one overlapping the range just before it.
+fn overlapping_ranges(ranges: &[(u64, u64, String)]) -> Vec<(usize, usize)> {
+    let mut overlaps = Vec::new();
+    let mut furthest: Option<usize> = None; // The earlier range with the greatest end
+    for (i, (start, end, _)) in ranges.iter().enumerate() {
+        if let Some(f) = furthest {
+            if *start < ranges[f].1 {
+                overlaps.push((f, i));
+            }
+        }
+        if furthest.is_none_or(|f| *end > ranges[f].1) {
+            furthest = Some(i);
+        }
+    }
+    overlaps
 }
 
 /// Returns groups of frames that have identical dimensions and pixels. Each group is sorted
@@ -526,6 +575,82 @@ mod tests {
         args.analyse_row_number = Some(0);
         let err = analyse_grp(&args).expect_err("expected --analyse-row-number to be rejected");
         assert!(matches!(err, Error::InvalidArgument(_)));
+    }
+
+    fn ranges(spans: &[(u64, u64)]) -> Vec<(u64, u64, String)> {
+        spans.iter().map(|&(start, end)| (start, end, format!("{}-{}", start, end))).collect()
+    }
+
+    #[test]
+    fn overlapping_ranges_finds_no_overlap_in_adjacent_ranges() {
+        assert_eq!(overlapping_ranges(&ranges(&[(0, 4), (4, 6), (6, 6), (6, 9)])), vec![]);
+    }
+
+    #[test]
+    fn overlapping_ranges_finds_partial_and_identical_overlaps() {
+        assert_eq!(overlapping_ranges(&ranges(&[(0, 4), (3, 6)])), vec![(0, 1)]);
+        assert_eq!(overlapping_ranges(&ranges(&[(0, 4), (0, 4)])), vec![(0, 1)]);
+    }
+
+    #[test]
+    fn overlapping_ranges_finds_overlap_with_earlier_range_than_the_previous_one() {
+        // The third range does not overlap the second, but does overlap the first
+        assert_eq!(overlapping_ranges(&ranges(&[(0, 10), (2, 3), (5, 6), (10, 12)])), vec![(0, 1), (0, 2)]);
+    }
+
+    /// Writes an Uncompressed GRP with three 2x2 frames, where frames 0 and 2 share image data
+    fn write_grp_with_shared_frames(dir: &std::path::Path) -> String {
+        let mut data = vec![0x03, 0x00, 0x02, 0x00, 0x02, 0x00]; // 3 frames, max size 2x2
+        data.extend([0, 0, 2, 2, 30, 0, 0, 0]); // Frame 0 at offset 6 + 3 * 8 = 30
+        data.extend([0, 0, 2, 2, 34, 0, 0, 0]); // Frame 1 at offset 34
+        data.extend([1, 1, 2, 2, 30, 0, 0, 0]); // Frame 2 shares the image data of frame 0
+        data.extend([1, 2, 3, 4, 5, 6, 7, 8]);
+        let path = dir.join("shared_frames.grp");
+        std::fs::write(&path, data).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// Writes a Normal GRP with one 2x3 frame, whose rows 0 and 1 share row data
+    fn write_grp_with_shared_rows(dir: &std::path::Path) -> String {
+        let mut data = vec![0x01, 0x00, 0x02, 0x00, 0x03, 0x00]; // 1 frame, max size 2x3
+        data.extend([0, 0, 2, 3, 14, 0, 0, 0]);
+        data.extend([6, 0, 6, 0, 8, 0]); // Row offsets: rows 0 and 1 both at +6, row 2 at +8
+        data.extend([0x42, 7]);          // Rows 0 and 1: colour 7 twice
+        data.extend([0x42, 8]);          // Row 2: colour 8 twice
+        let path = dir.join("shared_rows.grp");
+        std::fs::write(&path, data).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn used_ranges_add_shared_frame_data_once() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_grp_with_shared_frames(temp_dir.path());
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+
+        let ranges = used_ranges(&frames, grp_type);
+
+        assert_eq!(overlapping_ranges(&ranges), vec![]);
+        assert_ranges_cover_file(&ranges, std::fs::metadata(&path).unwrap().len());
+        let labels: Vec<&str> = ranges.iter().map(|(_, _, label)| label.as_str()).collect();
+        assert!(labels.contains(&"Frames 0, 2: Image data for row  0 (2 bytes)"), "{:?}", labels);
+        assert!(labels.contains(&"Frame  1: Image data for row  1 (2 bytes)"), "{:?}", labels);
+    }
+
+    #[test]
+    fn used_ranges_add_shared_row_data_once() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_grp_with_shared_rows(temp_dir.path());
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(frames[0].image_data.converted_pixels, vec![7, 7, 7, 7, 8, 8]);
+
+        let ranges = used_ranges(&frames, grp_type);
+
+        assert_eq!(overlapping_ranges(&ranges), vec![]);
+        assert_ranges_cover_file(&ranges, std::fs::metadata(&path).unwrap().len());
+        let labels: Vec<&str> = ranges.iter().map(|(_, _, label)| label.as_str()).collect();
+        assert!(labels.contains(&"Frame  0: Image data for rows 0, 1 (2 bytes)"), "{:?}", labels);
+        assert!(labels.contains(&"Frame  0: Image data for row  2 (2 bytes)"), "{:?}", labels);
     }
 
     #[test]
