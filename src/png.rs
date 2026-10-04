@@ -1,7 +1,7 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::error::{Error, InFile, Result};
 use crate::{validate_frame_number, Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
-use log::{debug, info};
+use log::{debug, info, warn};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
 
@@ -12,7 +12,12 @@ pub fn render_and_save_frames_to_png(
     max_frame_height: u32,
     args: &Args,
 ) -> Result<()> {
+    let (max_frame_width, max_frame_height) = canvas_size(frames, max_frame_width, max_frame_height);
+
     if args.tiled && args.frame_number.is_none() {
+        if frames.is_empty() {
+            return Err(Error::InvalidArgument("The GRP has no frames to draw".to_string()));
+        }
         // Tiled mode, so we need to draw all frames into one image.
         // Attempt to set the number of columns to sqrt(number of frames), so e.g., if there
         // are 25 frames, we will attempt to create a 5x5 image.
@@ -105,6 +110,22 @@ pub fn render_and_save_frames_to_png(
     }
 
     Ok(())
+}
+
+/// The size of the canvas to draw each frame on: the max width and height from the GRP header,
+/// enlarged if any frame extends beyond them, so that every frame fits.
+fn canvas_size(frames: &[GrpFrame], header_width: u32, header_height: u32) -> (u32, u32) {
+    let extent_width  = frames.iter().map(|f| f.x_offset as u32 + f.decoded_width() as u32).max().unwrap_or(0);
+    let extent_height = frames.iter().map(|f| f.y_offset as u32 + f.height as u32).max().unwrap_or(0);
+
+    if extent_width > header_width || extent_height > header_height {
+        warn!(
+            "The frames extend to {}x{}, beyond the max size of {}x{} given in the GRP header. \
+            The images will be enlarged so that all frames fit.",
+            extent_width, extent_height, header_width, header_height,
+        );
+    }
+    (header_width.max(extent_width), header_height.max(extent_height))
 }
 
 /// Groups of frames that are identical, each group sorted by frame index,
@@ -300,6 +321,95 @@ mod tests {
         // The last frame is still accepted
         render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, Some(2))).unwrap();
         assert!(Path::new(&format!("{}/frame_002.png", dir)).exists());
+    }
+
+    fn make_test_frame_with_offsets(pixel_value: u8, width: u8, height: u8, x_offset: u8, y_offset: u8) -> GrpFrame {
+        let mut frame = make_test_frame(pixel_value, width, height);
+        frame.x_offset = x_offset;
+        frame.y_offset = y_offset;
+        frame
+    }
+
+    fn png_size(path: &str) -> (u32, u32) {
+        image::image_dimensions(path).unwrap_or_else(|e| panic!("could not read {}: {}", path, e))
+    }
+
+    #[test]
+    fn canvas_size_is_header_size_when_all_frames_fit() {
+        let frames = vec![make_test_frame_with_offsets(1, 2, 2, 3, 4)]; // Extends to 5x6
+        assert_eq!(canvas_size(&frames, 5, 6),   (5, 6));
+        assert_eq!(canvas_size(&frames, 10, 10), (10, 10));
+        assert_eq!(canvas_size(&[], 7, 8),       (7, 8));
+    }
+
+    #[test]
+    fn canvas_size_is_enlarged_to_fit_all_frames() {
+        let frames = vec![
+            make_test_frame_with_offsets(1, 2, 2, 3, 0), // Extends to 5x2
+            make_test_frame_with_offsets(1, 1, 3, 0, 4), // Extends to 1x7
+        ];
+        assert_eq!(canvas_size(&frames, 4, 4), (5, 7));
+        assert_eq!(canvas_size(&frames, 0, 0), (5, 7));
+        assert_eq!(canvas_size(&frames, 9, 0), (9, 7));
+    }
+
+    #[test]
+    fn canvas_size_accounts_for_extended_width() {
+        let mut frame = make_test_frame_with_offsets(1, 44, 1, 2, 0);
+        frame.image_data.grp_type = GrpType::UncompressedExtended;
+        frame.image_data.converted_pixels = vec![1; 300];
+        assert_eq!(canvas_size(&[frame], 256, 1), (302, 1)); // 2 + 44 + 256
+    }
+
+    #[test]
+    fn saves_frames_extending_beyond_header_size() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+        let frames = vec![
+            make_test_frame_with_offsets(10, 2, 2, 0, 0),
+            make_test_frame_with_offsets(20, 2, 2, 1, 1), // Extends to 3x3
+        ];
+
+        for (header_width, header_height) in [(2, 2), (0, 0)] {
+            render_and_save_frames_to_png(&frames, &palette, header_width, header_height, &make_test_args(dir, None))
+                .unwrap();
+
+            for i in 0..frames.len() {
+                let path = format!("{}/frame_{:03}.png", dir, i);
+                assert_eq!(png_size(&path), (3, 3), "for header size {}x{}", header_width, header_height);
+            }
+            let png = png_to_pixels(&format!("{}/frame_001.png", dir), &palette).unwrap();
+            assert_eq!((png.x_offset, png.y_offset, png.width, png.height), (1, 1, 2, 2));
+            assert_eq!(png.palettized_image, vec![20; 4]);
+        }
+    }
+
+    #[test]
+    fn saves_tiled_frames_extending_beyond_header_size() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+        let frames: Vec<GrpFrame> = (0..4).map(|i| make_test_frame_with_offsets(10, 2, 2, i, 0)).collect();
+
+        let mut args = make_test_args(dir, None);
+        args.tiled = true;
+        render_and_save_frames_to_png(&frames, &palette, 2, 2, &args).unwrap();
+
+        // 2x2 frames of 5x2 pixels each, since the last frame extends to x = 3 + 2
+        assert_eq!(png_size(&format!("{}/all_frames.png", dir)), (10, 4));
+    }
+
+    #[test]
+    fn tiled_mode_rejects_grp_without_frames() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let mut args = make_test_args(dir, None);
+        args.tiled = true;
+
+        let err = render_and_save_frames_to_png(&[], &greyscale_palette(), 4, 4, &args)
+            .expect_err("expected an error for a GRP without frames");
+        assert!(matches!(err, Error::InvalidArgument(_)));
     }
 
     fn make_test_frame_at(pixel_value: u8, width: u8, height: u8, image_data_offset: u32) -> GrpFrame {

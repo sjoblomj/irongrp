@@ -38,6 +38,7 @@ All notable changes to this project will be documented in this file.
 - Corrected crash in debug builds when analysing a frame of the maximum height of 255 rows with `analyse-grp --frame-number`.
 - Corrected the detection of Uncompressed GRPs: it could crash in debug builds on GRPs with very large total frame sizes, and misdetected Uncompressed GRPs whose image data is not stored in frame order as Normal.
 - Corrected bug where a GRP whose frame headers could also be read in the WarCraft I style layout, but whose data was not uncompressed in it, was read as a Normal GRP with the max width and height from the WarCraft I style header. WarCraft I style GRPs are now only detected as such if they are uncompressed.
+- Corrected bug where `grp-to-png` failed, possibly after writing some of the PNGs, on GRPs whose header gives a max width or height smaller than the frames extend to. The PNGs are now enlarged to fit all frames, with a warning.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
