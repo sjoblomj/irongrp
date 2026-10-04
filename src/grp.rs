@@ -133,12 +133,14 @@ fn determine_grp_style<R: Read + Seek>(
 ) -> Result<bool> {
 
     if war1_max_width != 0 && war1_max_height != 0 {
-        // This is true for War1 GRPs and Extended GRPs
+        // This is true for War1 GRPs and Extended GRPs. WarCraft I style GRPs are always
+        // uncompressed, so if the frame headers can be read in the War1 layout but the data
+        // is not uncompressed in it, then the GRP is not WarCraft I style.
         let is_war1_style = try_reading_frame_headers(
             file,
             frame_count,
             get_header_size(true),
-        ).is_ok();
+        ).is_ok() && detect_uncompressed(file, frame_count, true)?;
         if is_war1_style {
             return Ok(is_war1_style)
         }
@@ -908,7 +910,7 @@ fn make_frame_reuse_key(compression_type: &CompressionType, image: &PalettizedIm
 }
 
 /// Detects whether the given GRP is uncompressed (unusual) or not (normal).
-pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war1_style: bool) -> Result<bool> {
+pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, frame_count: u16, war1_style: bool) -> Result<bool> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(get_header_size(war1_style) as u64))?;
@@ -919,7 +921,7 @@ pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war
     let mut min_offset: Option<u64> = None;
     let mut total_frame_size: u64 = 0;
 
-    for _ in 0..header.frame_count {
+    for _ in 0..frame_count {
 
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
@@ -938,7 +940,10 @@ pub fn detect_uncompressed<R: Read + Seek>(file: &mut R, header: &GrpHeader, war
     }
 
     let is_uncompressed = min_offset.is_some_and(|min| min + total_frame_size == file_len);
-    let msg = format!("Is uncompressed: {}. Is WarCraft I style: {}", is_uncompressed, war1_style);
+    let msg = format!(
+        "Is uncompressed when read as {} style: {}",
+        if war1_style { "WarCraft I" } else { "normal" }, is_uncompressed,
+    );
     if is_uncompressed {
         warn!("{}", msg);
     } else {
@@ -953,11 +958,11 @@ pub fn read_grp_file(path: impl AsRef<Path>) -> Result<(GrpHeader, GrpType, Vec<
     let read = || -> Result<_> {
         let mut f = File::open(&path)?;
         let (header, war1_style) = read_grp_header(&mut f)?;
-        let is_uncompressed = detect_uncompressed(&mut f, &header, war1_style)?;
 
-        let grp_type = if is_uncompressed && war1_style {
+        // WarCraft I style GRPs are only detected as such if they are uncompressed
+        let grp_type = if war1_style {
             GrpType::War1
-        } else if is_uncompressed {
+        } else if detect_uncompressed(&mut f, header.frame_count, false)? {
             GrpType::Uncompressed
         } else {
             GrpType::Normal
@@ -1225,6 +1230,158 @@ mod tests {
     }
 
     #[test]
+    fn normal_grp_whose_frame_headers_also_fit_the_war1_layout_is_read_as_normal() {
+        // A Normal GRP with one 2x2 frame at x = 1, y = 1, whose image data is at 0x10000.
+        // Read in the War1 layout (4 byte header), the bytes form a valid frame header too:
+        // max width 0x0202 gives a War1 max size of 2x2, and the frame header is read from
+        // bytes 4..12, giving a 1x1 frame with image data offset 0x0202, within the file.
+        // But the data is not uncompressed in that layout, so the GRP is not War1 style.
+        let image_data_offset: u32 = 0x1_0000;
+        let mut data = vec![0x01, 0x00, 0x02, 0x02, 0x02, 0x00]; // 1 frame, max size 514x2
+        data.extend([1, 1, 2, 2]);                               // x, y, width, height
+        data.extend(image_data_offset.to_le_bytes());
+        data.resize(image_data_offset as usize, 0);              // Padding up to the image data
+        data.extend([4, 0, 6, 0]);                               // Row offsets
+        data.extend([0x42, 7, 0x42, 8]);                         // Rows: 7, 7 and 8, 8
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("looks_like_war1.grp");
+        std::fs::write(&path, &data).unwrap();
+
+        // The War1 layout is valid as far as the frame headers go
+        let mut cursor = std::io::Cursor::new(&data);
+        assert!(try_reading_frame_headers(&mut cursor, 1, get_header_size(true)).is_ok());
+
+        let (header, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::Normal);
+        assert_eq!((header.max_width, header.max_height), (514, 2));
+        assert_eq!((frames[0].x_offset, frames[0].y_offset), (1, 1));
+        assert_eq!((frames[0].width, frames[0].height), (2, 2));
+        assert_eq!(frames[0].image_data.converted_pixels, vec![7, 7, 8, 8]);
+    }
+
+    /// A frame of the given position and size, whose pixels are derived from `seed`
+    fn seeded_image(x_offset: u8, y_offset: u8, width: u16, height: u16, seed: u8) -> PalettizedImageWithMetadata<u8, u16> {
+        let pixels = (0..width as usize * height as usize)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect();
+        PalettizedImageWithMetadata::new(
+            palpngrs::Offset::new(x_offset, y_offset),
+            palpngrs::Size::new(width, height),
+            palpngrs::Size::new(width, height),
+            pixels,
+        )
+    }
+
+    /// Encodes the images as a GRP with the given header max size, writes it to a temporary
+    /// file, reads it back and checks that the type, header and frames are as expected.
+    fn assert_grp_roundtrip(
+        images: Vec<PalettizedImageWithMetadata<u8, u16>>,
+        max_size: (u16, u16),
+        compression_type: CompressionType,
+        expected_type: GrpType,
+    ) {
+        let mut offset = (get_header_size(compression_type == CompressionType::War1) + images.len() * 8) as u32;
+        let mut frames = Vec::new();
+        for image in images.iter().cloned() {
+            let frame = png_to_grpframe(image, offset, &compression_type).unwrap();
+            offset += frame.grp_frame_len() as u32;
+            frames.push(frame);
+        }
+        let header = create_grp_header(&frames, max_size.0, max_size.1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("roundtrip.grp");
+        let path = path.to_str().unwrap();
+        write_grp_file(path, &header, &frames, &compression_type).unwrap();
+
+        let (read_header, grp_type, read_frames) = read_grp_file(path).unwrap();
+        let context = format!("max size {:?}, {} frame(s)", max_size, images.len());
+        assert_eq!(grp_type, expected_type, "{}", context);
+        assert_eq!((read_header.max_width, read_header.max_height), max_size, "{}", context);
+        assert_eq!(read_frames.len(), images.len(), "{}", context);
+        for (i, (frame, image)) in read_frames.iter().zip(&images).enumerate() {
+            assert_eq!((frame.x_offset, frame.y_offset), (image.x_offset, image.y_offset), "frame {}, {}", i, context);
+            assert_eq!((frame.decoded_width(), frame.height as u16), (image.width, image.height), "frame {}, {}", i, context);
+            assert_eq!(frame.image_data.converted_pixels, image.palettized_image, "frame {}, {}", i, context);
+        }
+    }
+
+    #[test]
+    fn extended_uncompressed_grps_with_two_byte_max_width_are_not_read_as_war1() {
+        // The low and high bytes of these max widths are both non-zero, so reading the GRP
+        // first tries the War1 layout, where they would be the max width and height.
+        for max_width in [257, 300, 384, 511] {
+            for max_height in [1, 2, 40, 255] {
+                let images = vec![
+                    seeded_image(0, 0, max_width, max_height.min(3), 1),         // Extended
+                    seeded_image(3, 1, 10, 2, 2),                                // Not extended
+                    seeded_image(1, 0, max_width - 1, max_height.min(2), 3),     // Extended
+                ];
+                assert_grp_roundtrip(
+                    images, (max_width, max_height), CompressionType::Uncompressed, GrpType::Uncompressed,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normal_grps_with_two_byte_max_width_are_not_read_as_war1() {
+        for max_width in [257, 300, 384, 511] {
+            let images = vec![
+                seeded_image(0, 0, 255, 3, 1),
+                seeded_image(200, 1, 10, 2, 2),
+            ];
+            assert_grp_roundtrip(images, (max_width, 40), CompressionType::Normal, GrpType::Normal);
+        }
+    }
+
+    #[test]
+    fn war1_grps_are_read_as_war1() {
+        for (max_width, max_height) in [(1, 1), (2, 30), (255, 255)] {
+            let images = vec![
+                seeded_image(0, 0, max_width, max_height, 1),
+                seeded_image(0, 0, 1, 1, 2),
+            ];
+            assert_grp_roundtrip(images, (max_width, max_height), CompressionType::War1, GrpType::War1);
+        }
+    }
+
+    /// Frames as (x_offset, y_offset, width, height, seed), with widths up to `max_width`
+    fn frames_strategy(max_width: u16) -> impl Strategy<Value = Vec<(u8, u8, u16, u16, u8)>> {
+        proptest::collection::vec((any::<u8>(), any::<u8>(), 1..=max_width, 1u16..=4, any::<u8>()), 1..5)
+    }
+
+    proptest! {
+        // Every GRP must be read back as the type it was written as, with the same header and
+        // frames, whatever the header's max size is. In particular, max widths whose low and
+        // high bytes are both non-zero make the reader try the War1 layout first.
+        #[test]
+        fn prop_uncompressed_grps_are_read_back_as_uncompressed(
+            max_width in 1u16..=511, max_height in 1u16..=255, frames in frames_strategy(511),
+        ) {
+            let images = frames.into_iter().map(|(x, y, w, h, seed)| seeded_image(x, y, w, h, seed)).collect();
+            assert_grp_roundtrip(images, (max_width, max_height), CompressionType::Uncompressed, GrpType::Uncompressed);
+        }
+
+        #[test]
+        fn prop_normal_grps_are_read_back_as_normal(
+            max_width in 1u16..=511, max_height in 1u16..=255, frames in frames_strategy(255),
+        ) {
+            let images = frames.into_iter().map(|(x, y, w, h, seed)| seeded_image(x, y, w, h, seed)).collect();
+            assert_grp_roundtrip(images, (max_width, max_height), CompressionType::Normal, GrpType::Normal);
+        }
+
+        #[test]
+        fn prop_war1_grps_are_read_back_as_war1(
+            max_width in 1u16..=255, max_height in 1u16..=255, frames in frames_strategy(255),
+        ) {
+            let images = frames.into_iter().map(|(x, y, w, h, seed)| seeded_image(x, y, w, h, seed)).collect();
+            assert_grp_roundtrip(images, (max_width, max_height), CompressionType::War1, GrpType::War1);
+        }
+    }
+
+    #[test]
     fn detects_uncompressed_grp_with_image_data_not_in_frame_order() {
         // Two 2x2 frames, where the image data of frame 1 comes before that of frame 0
         let mut data = vec![0x02, 0x00, 0x02, 0x00, 0x02, 0x00]; // 2 frames, max size 2x2
@@ -1256,7 +1413,7 @@ mod tests {
         }
         let header = GrpHeader { frame_count, max_width: 511, max_height: 255 };
 
-        let result = detect_uncompressed(&mut Cursor::new(data), &header, false);
+        let result = detect_uncompressed(&mut Cursor::new(data), header.frame_count, false);
 
         assert!(matches!(result, Ok(false)));
     }
@@ -1265,7 +1422,7 @@ mod tests {
     fn detect_uncompressed_is_false_for_grp_without_frames() {
         use std::io::Cursor;
         let header = GrpHeader { frame_count: 0, max_width: 0, max_height: 0 };
-        let result = detect_uncompressed(&mut Cursor::new(vec![0u8; 6]), &header, false);
+        let result = detect_uncompressed(&mut Cursor::new(vec![0u8; 6]), header.frame_count, false);
         assert!(matches!(result, Ok(false)));
     }
 

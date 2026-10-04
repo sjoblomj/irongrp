@@ -37,6 +37,7 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where `analyse-grp --frame-number` printed wrong absolute row offsets for frames whose image data is more than 64 KiB into the file, or crashed in debug builds.
 - Corrected crash in debug builds when analysing a frame of the maximum height of 255 rows with `analyse-grp --frame-number`.
 - Corrected the detection of Uncompressed GRPs: it could crash in debug builds on GRPs with very large total frame sizes, and misdetected Uncompressed GRPs whose image data is not stored in frame order as Normal.
+- Corrected bug where a GRP whose frame headers could also be read in the WarCraft I style layout, but whose data was not uncompressed in it, was read as a Normal GRP with the max width and height from the WarCraft I style header. WarCraft I style GRPs are now only detected as such if they are uncompressed.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
