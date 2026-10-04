@@ -32,6 +32,7 @@ All notable changes to this project will be documented in this file.
 - Corrected crash (or, in release builds, reading the wrong frame headers) when reading GRPs with more than 8191 frames.
 - Corrected bug where converting PNGs from a GRP with more than 1000 frames back to a GRP put the frames in the wrong order, since `frame_1000.png` was sorted before `frame_999.png`. PNG files are now sorted with numbers in their names ordered by value.
 - Corrected bug where the generated shell completion script started with a log line, which broke it when redirected to a file. The message is now written to stderr.
+- Corrected bug where `grp-to-png` with a `--frame-number` beyond the last frame succeeded without writing anything. It is now an error, as it already was for `analyse-grp`.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

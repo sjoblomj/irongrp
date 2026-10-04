@@ -149,6 +149,16 @@ pub fn list_png_files(dir: &str) -> Result<Vec<String>> {
     Ok(entries)
 }
 
+/// Checks that the frame number, if given, refers to one of the `frame_count` frames.
+pub(crate) fn validate_frame_number(frame_number: Option<u16>, frame_count: usize) -> Result<()> {
+    match frame_number {
+        Some(n) if n as usize >= frame_count => Err(Error::InvalidArgument(format!(
+            "Frame number {} is out of range; the GRP has {} frame(s)", n, frame_count,
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Compares strings so that runs of digits are ordered by their numeric value, so that e.g.
 /// "frame_999.png" comes before "frame_1000.png". Strings that only differ in leading zeros,
 /// such as "frame_01" and "frame_1", fall back to ordinary string comparison.
@@ -188,6 +198,24 @@ const WAR1_FILENAME: &str = "war1";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_frame_number_accepts_frames_in_range_or_no_frame() {
+        assert!(validate_frame_number(None,    0).is_ok());
+        assert!(validate_frame_number(None,    3).is_ok());
+        assert!(validate_frame_number(Some(0), 3).is_ok());
+        assert!(validate_frame_number(Some(2), 3).is_ok());
+    }
+
+    #[test]
+    fn validate_frame_number_rejects_frames_out_of_range() {
+        for (frame_number, frame_count) in [(3, 3), (7, 3), (0, 0), (u16::MAX, u16::MAX as usize)] {
+            let err = validate_frame_number(Some(frame_number), frame_count)
+                .expect_err("expected the frame number to be rejected");
+            assert!(matches!(err, Error::InvalidArgument(_)));
+            assert!(err.to_string().contains(&format!("the GRP has {} frame(s)", frame_count)));
+        }
+    }
 
     #[test]
     fn natural_cmp_orders_numbers_by_value() {

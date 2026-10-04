@@ -1,6 +1,6 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::error::{Error, InFile, Result};
-use crate::{Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{validate_frame_number, Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use log::{debug, info};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
@@ -72,6 +72,7 @@ pub fn render_and_save_frames_to_png(
 
     } else {
         // Non-tiled mode - save each frame as a separate image.
+        validate_frame_number(args.frame_number, frames.len())?;
         for (i, frame) in frames.iter().enumerate() {
             if args.frame_number.is_some() && args.frame_number != Some(i as u16) {
                 continue;
@@ -275,6 +276,30 @@ mod tests {
         assert!(!Path::new(&format!("{}/frame_000.png", dir)).exists());
         assert!( Path::new(&format!("{}/frame_001.png", dir)).exists());
         assert!(!Path::new(&format!("{}/frame_002.png", dir)).exists());
+    }
+
+    #[test]
+    fn rejects_frame_number_out_of_range_and_saves_nothing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+
+        let frames = vec![
+            make_test_frame(10, 4, 4),
+            make_test_frame(20, 4, 4),
+            make_test_frame(30, 4, 4),
+        ];
+
+        for frame_number in [3, 7] {
+            let err = render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, Some(frame_number)))
+                .expect_err("expected the frame number to be rejected");
+            assert!(matches!(err, Error::InvalidArgument(_)), "for frame {}", frame_number);
+        }
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0, "expected no files to be saved");
+
+        // The last frame is still accepted
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, Some(2))).unwrap();
+        assert!(Path::new(&format!("{}/frame_002.png", dir)).exists());
     }
 
     fn make_test_frame_at(pixel_value: u8, width: u8, height: u8, image_data_offset: u32) -> GrpFrame {

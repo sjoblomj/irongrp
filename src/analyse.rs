@@ -1,6 +1,6 @@
 use crate::error::{Error, InFile, Result};
 use crate::grp::{read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::Args;
+use crate::{validate_frame_number, Args};
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::fs::File;
@@ -19,13 +19,9 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     println!();
     info!("GRP type: {:?}", grp_type);
 
-    if args.frame_number.is_some() {
-        let frame_number = args.frame_number.unwrap() as usize;
-        if  frame_number >= frames.len() {
-            return Err(Error::InvalidArgument(format!(
-                "Frame number {} is out of range; the GRP has {} frame(s)", frame_number, frames.len(),
-            )));
-        }
+    validate_frame_number(args.frame_number, frames.len())?;
+    if let Some(frame_number) = args.frame_number {
+        let frame_number = frame_number as usize;
         if args.analyse_row_number.is_some() && is_uncompressed {
             return Err(Error::InvalidArgument(
                 "--analyse-row-number is only supported for GRPs of type Normal".to_string(),

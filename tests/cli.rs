@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 fn irongrp() -> Command {
@@ -31,4 +32,55 @@ fn shell_completions_contain_only_the_completion_script() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains("Generating completions for"), "for {}: {:?}", shell, stderr);
     }
+}
+
+/// Writes an Uncompressed GRP with `frame_count` 1x1 frames, and returns its path
+fn write_test_grp(dir: &Path, frame_count: u8) -> String {
+    let mut data = vec![frame_count, 0, 1, 0, 1, 0]; // Frame count, max width 1, max height 1
+    let first_offset = 6 + 8 * frame_count as u32;
+    for i in 0..frame_count {
+        data.extend([0, 0, 1, 1]); // x and y offsets, width and height
+        data.extend((first_offset + i as u32).to_le_bytes());
+    }
+    data.extend((0..frame_count).map(|i| i + 1)); // One pixel per frame
+    let path = dir.join("test.grp");
+    std::fs::write(&path, data).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn grp_to_png_rejects_frame_number_out_of_range() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+
+    let output = irongrp()
+        .args(["--mode", "grp-to-png", "--input-path", &grp, "--frame-number", "3"])
+        .arg("--output-path").arg(&out_dir)
+        .output()
+        .expect("failed to run irongrp");
+
+    assert!(!output.status.success(), "expected a failure exit status");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Frame number 3 is out of range; the GRP has 3 frame(s)"), "{:?}", stderr);
+    assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 0, "expected no PNGs to be written");
+}
+
+#[test]
+fn grp_to_png_writes_only_the_requested_frame() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+
+    let output = irongrp()
+        .args(["--mode", "grp-to-png", "--input-path", &grp, "--frame-number", "2"])
+        .arg("--output-path").arg(&out_dir)
+        .output()
+        .expect("failed to run irongrp");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let files: Vec<String> = std::fs::read_dir(&out_dir).unwrap()
+        .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(files, vec!["uncompressed_frame_002.png"]);
 }
