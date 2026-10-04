@@ -32,8 +32,9 @@ fn run(args: &Args) -> Result<()> {
     let start_time = SystemTime::now();
 
     if let Some(generator) = args.generator {
+        // The completion script is written to stdout, so the status message goes to stderr
         let mut cmd = Args::command();
-        info!("Generating completion file for {generator:?}...");
+        eprintln!("Generating completions for {generator:?}...");
         print_completions(generator, &mut cmd);
         return Ok(());
     }

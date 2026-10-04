@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - The max width and height in the header of a created GRP now also take into account the canvas size of frames that reuse the image data of an earlier frame.
 - Corrected crash (or, in release builds, reading the wrong frame headers) when reading GRPs with more than 8191 frames.
 - Corrected bug where converting PNGs from a GRP with more than 1000 frames back to a GRP put the frames in the wrong order, since `frame_1000.png` was sorted before `frame_999.png`. PNG files are now sorted with numbers in their names ordered by value.
+- Corrected bug where the generated shell completion script started with a log line, which broke it when redirected to a file. The message is now written to stderr.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 
