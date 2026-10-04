@@ -40,6 +40,7 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where a GRP whose frame headers could also be read in the WarCraft I style layout, but whose data was not uncompressed in it, was read as a Normal GRP with the max width and height from the WarCraft I style header. WarCraft I style GRPs are now only detected as such if they are uncompressed.
 - Corrected bug where `grp-to-png` failed, possibly after writing some of the PNGs, on GRPs whose header gives a max width or height smaller than the frames extend to. The PNGs are now enlarged to fit all frames, with a warning.
 - GRPs with 0 frames are now rejected with the error "The GRP has no frames". Previously, such files were rejected as too short if they were 6 bytes, while longer files beginning with two zero bytes, such as many non-GRP game files, were accepted as GRPs.
+- Stricter validation of the frame headers when reading a GRP: image data offsets pointing into the header or the frame header table, at the end of the file, or too close to the end of the file to hold the frame's image data are now rejected.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

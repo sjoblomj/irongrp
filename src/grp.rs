@@ -165,8 +165,9 @@ fn read_grp_bytes<R: Read>(file: &mut R, buf: &mut [u8], msg: &str) -> Result<()
     })
 }
 
-/// Reads all frame headers and checks that the offsets are within file boundaries.
-/// Returns Error if not.
+/// Reads all frame headers and checks that their image data can be within the file: after the
+/// frame header table, and with room for the smallest possible image data before the end of the
+/// file. Returns Error if not.
 fn try_reading_frame_headers<R: Read + Seek>(
     file: &mut R,
     frame_count: u16,
@@ -174,24 +175,36 @@ fn try_reading_frame_headers<R: Read + Seek>(
 ) -> Result<()> {
 
     let file_len = file.seek(SeekFrom::End(0))?;
+    let frame_headers_end = start_pos as u64 + frame_count as u64 * 8;
     for i in 0..frame_count {
         file.seek(SeekFrom::Start(start_pos as u64 + i as u64 * 8))?;
         let mut buf = [0u8; 8];
         read_grp_bytes(file, &mut buf, "Frame header table goes beyond end of file")?;
 
         // buf[0] and buf[1] contain x_offset and y_offset, respectively
-        let w = u8::from_le_bytes([buf[2]]);
-        let height = u8::from_le_bytes([buf[3]]);
+        let w = buf[2];
+        let height = buf[3];
         let image_data_offset = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
         let (width, offset) = adjust_width_and_offset_if_extended_when_decoding(w, image_data_offset);
+        let offset = offset as u64;
 
         if width == 0 || height == 0 {
             return Err(Error::InvalidGrp(format!("Frame {} has zero width or height", i)));
         }
-        if offset > file_len as u32 {
+        if offset < frame_headers_end {
             return Err(Error::InvalidGrp(format!(
-                "Frame {} has image data offset 0x{:X}, beyond end of file (0x{:X})", i, offset, file_len,
+                "Frame {} has image data offset 0x{:X}, within the GRP header or frame header table \
+                (which ends at 0x{:X})", i, offset, frame_headers_end,
+            )));
+        }
+        // The type of GRP is not known yet. Uncompressed frames take width * height bytes, while
+        // Normal frames take at least a row offset table of 2 bytes per row, and 1 byte of row data.
+        let min_image_data_len = (width as u64 * height as u64).min(2 * height as u64 + 1);
+        if offset + min_image_data_len > file_len {
+            return Err(Error::InvalidGrp(format!(
+                "Frame {} has image data offset 0x{:X}, leaving too little room for its image data \
+                before the end of the file (0x{:X})", i, offset, file_len,
             )));
         }
     }
@@ -1066,6 +1079,77 @@ mod tests {
             let err = read_grp_header(&mut Cursor::new(data.clone())).expect_err("expected an error");
             assert_eq!(err.to_string(), "invalid GRP: File is too short to contain a GRP header", "for {:?}", data);
         }
+    }
+
+    /// Checks frame headers of the given (width, height, image data offset) frames, after a
+    /// header of `header_len` bytes, in a file of `file_len` bytes
+    fn check_frame_headers(header_len: usize, frames: &[(u8, u8, u32)], file_len: usize) -> Result<()> {
+        use std::io::Cursor;
+        let mut data = vec![0u8; header_len];
+        for &(width, height, offset) in frames {
+            data.extend([0, 0, width, height]);
+            data.extend(offset.to_le_bytes());
+        }
+        assert!(file_len >= data.len(), "test setup: the file must fit the frame headers");
+        data.resize(file_len, 0);
+        try_reading_frame_headers(&mut Cursor::new(data), frames.len() as u16, header_len)
+    }
+
+    fn assert_invalid_grp(result: Result<()>, expected_message: &str) {
+        let err = result.expect_err("expected the frame headers to be rejected");
+        assert!(matches!(err, Error::InvalidGrp(_)), "{}", err);
+        assert!(err.to_string().contains(expected_message), "{}", err);
+    }
+
+    #[test]
+    fn frame_headers_accept_image_data_right_after_the_frame_header_table() {
+        for header_len in [4, 6] {
+            let offset = header_len as u32 + 2 * 8;
+            let frames = [(1, 1, offset), (1, 1, offset + 1)];
+            assert!(check_frame_headers(header_len, &frames, offset as usize + 2).is_ok());
+        }
+    }
+
+    #[test]
+    fn frame_headers_reject_image_data_within_the_header_or_frame_header_table() {
+        for header_len in [4, 6] {
+            let table_end = header_len as u32 + 2 * 8;
+            for offset in [0, header_len as u32, table_end - 1] {
+                let frames = [(1, 1, table_end), (1, 1, offset)];
+                assert_invalid_grp(
+                    check_frame_headers(header_len, &frames, 100),
+                    "within the GRP header or frame header table",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_headers_reject_image_data_offset_at_end_of_file() {
+        // Previously accepted, since only offsets beyond the end of the file were rejected
+        assert_invalid_grp(check_frame_headers(6, &[(1, 1, 14)], 14), "too little room");
+        assert_invalid_grp(check_frame_headers(6, &[(1, 1, 20)], 14), "too little room");
+    }
+
+    #[test]
+    fn frame_headers_require_room_for_the_smallest_possible_image_data() {
+        // A 2x2 frame takes 4 bytes uncompressed, or at least 2 * 2 + 1 = 5 bytes compressed
+        assert!(check_frame_headers(6, &[(2, 2, 14)], 14 + 4).is_ok());
+        assert_invalid_grp(check_frame_headers(6, &[(2, 2, 14)], 14 + 3), "too little room");
+
+        // A 10x2 frame takes 20 bytes uncompressed, or at least 5 bytes compressed
+        assert!(check_frame_headers(6, &[(10, 2, 14)], 14 + 5).is_ok());
+        assert_invalid_grp(check_frame_headers(6, &[(10, 2, 14)], 14 + 4), "too little room");
+    }
+
+    #[test]
+    fn frame_headers_check_extended_offsets_without_the_extended_bit() {
+        // A 300x1 extended frame (width 44 in the file) with 300 bytes of image data at offset 14
+        let extended = |offset: u32| [(44, 1, offset | EXTENDED_OFFSET_BIT)];
+        assert!(check_frame_headers(6, &extended(14), 14 + 300).is_ok());
+        assert_invalid_grp(check_frame_headers(6, &extended(13), 14 + 300), "frame header table");
+        // Compressed, a 1 row frame needs at least 3 bytes, and Uncompressed, 300 bytes
+        assert_invalid_grp(check_frame_headers(6, &extended(14), 14 + 2), "too little room");
     }
 
     #[test]
