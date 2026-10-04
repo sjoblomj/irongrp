@@ -166,7 +166,7 @@ fn try_reading_frame_headers<R: Read + Seek>(
 
     let file_len = file.seek(SeekFrom::End(0))?;
     for i in 0..frame_count {
-        file.seek(SeekFrom::Start(start_pos as u64 + (i * 8) as u64))?;
+        file.seek(SeekFrom::Start(start_pos as u64 + i as u64 * 8))?;
         let mut buf = [0u8; 8];
         read_grp_bytes(file, &mut buf, "Frame header table goes beyond end of file")?;
 
@@ -227,7 +227,7 @@ pub fn read_grp_frames<R: Read + Seek>(
     let mut frames = Vec::new();
     for i in 0..frame_count {
         debug!("Reading GRP Frame {} / {}", i, frame_count);
-        file.seek(SeekFrom::Start(pos + (i * 8) as u64))?;
+        file.seek(SeekFrom::Start(pos + i as u64 * 8))?;
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
 
@@ -358,7 +358,7 @@ fn read_image_data<R: Read + Seek>(
     // Parse row offsets from the beginning of data_block
     let mut row_offsets = Vec::with_capacity(height as usize);
     for i in 0..height {
-        let offset_start = (i * 2) as usize;
+        let offset_start = i as usize * 2;
         if  offset_start + 2 > data_block.len() {
             return Err(Error::InvalidGrp("Not enough data for row offset table".to_string()));
         }
@@ -1184,6 +1184,44 @@ mod tests {
         assert_eq!(header.max_height,  1);
         assert!(result.is_ok());
         Ok(())
+    }
+
+    #[test]
+    fn reads_grp_with_more_frame_headers_than_fit_in_u16_bytes() {
+        // u16::MAX frames, so the frame header table (8 bytes per frame) is far beyond 64 KiB.
+        // All frames are 1x1 pixels and share the same image data, but each frame header has
+        // a unique combination of x and y offsets, so we can tell that each was read correctly.
+        let frame_count = u16::MAX;
+        for war1_style in [false, true] {
+            let header: Vec<u8> = if war1_style {
+                vec![0, 0, 1, 1]       // frame count, then max width and height as u8
+            } else {
+                vec![0, 0, 1, 0, 1, 0] // frame count, then max width and height as u16
+            };
+            let mut data = header;
+            data[0..2].copy_from_slice(&frame_count.to_le_bytes());
+
+            let image_data_offset = (data.len() + frame_count as usize * 8) as u32;
+            for i in 0..frame_count {
+                data.extend([i as u8, (i >> 8) as u8, 1, 1]);
+                data.extend(image_data_offset.to_le_bytes());
+            }
+            data.push(0x71); // The 1 pixel of image data shared by all frames
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let path = temp_dir.path().join("many_frames.grp");
+            std::fs::write(&path, data).unwrap();
+
+            let (header, grp_type, frames) = read_grp_file(&path).unwrap();
+            let expected_type = if war1_style { GrpType::War1 } else { GrpType::Uncompressed };
+            assert_eq!(grp_type, expected_type);
+            assert_eq!(header.frame_count, frame_count);
+            assert_eq!(frames.len(), frame_count as usize);
+            for (i, frame) in frames.iter().enumerate() {
+                assert_eq!((frame.x_offset, frame.y_offset), (i as u8, (i >> 8) as u8), "frame {}", i);
+                assert_eq!(frame.image_data.converted_pixels, vec![0x71], "frame {}", i);
+            }
+        }
     }
 
     #[test]
