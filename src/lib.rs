@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum, ValueHint};
 use clap_complete::Shell;
 use simplelog::LevelFilter;
+use std::cmp::Ordering;
 use std::fmt;
 use std::fs;
 
@@ -144,9 +145,97 @@ pub fn list_png_files(dir: &str) -> Result<Vec<String>> {
             "Too many PNGs found in directory '{}'! Found {} PNGs, but cannot handle more than {}",
             dir, entries.len(), u16::MAX)))
     }
-    entries.sort();
+    entries.sort_by(|a, b| natural_cmp(a, b));
     Ok(entries)
+}
+
+/// Compares strings so that runs of digits are ordered by their numeric value, so that e.g.
+/// "frame_999.png" comes before "frame_1000.png". Strings that only differ in leading zeros,
+/// such as "frame_01" and "frame_1", fall back to ordinary string comparison.
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a_rest, mut b_rest) = (a, b);
+    loop {
+        let (Some(a_char), Some(b_char)) = (a_rest.chars().next(), b_rest.chars().next()) else {
+            return a_rest.len().cmp(&b_rest.len()).then_with(|| a.cmp(b));
+        };
+        let ordering = if a_char.is_ascii_digit() && b_char.is_ascii_digit() {
+            let (a_digits, a_tail) = split_leading_digits(a_rest);
+            let (b_digits, b_tail) = split_leading_digits(b_rest);
+            a_rest = a_tail;
+            b_rest = b_tail;
+            let (a_num, b_num) = (a_digits.trim_start_matches('0'), b_digits.trim_start_matches('0'));
+            a_num.len().cmp(&b_num.len()).then_with(|| a_num.cmp(b_num))
+        } else {
+            a_rest = &a_rest[a_char.len_utf8()..];
+            b_rest = &b_rest[b_char.len_utf8()..];
+            a_char.cmp(&b_char)
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+}
+
+fn split_leading_digits(s: &str) -> (&str, &str) {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    s.split_at(end)
 }
 
 const UNCOMPRESSED_FILENAME: &str = "uncompressed";
 const WAR1_FILENAME: &str = "war1";
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn natural_cmp_orders_numbers_by_value() {
+        assert_eq!(natural_cmp("frame_999.png",  "frame_1000.png"), Ordering::Less);
+        assert_eq!(natural_cmp("frame_1000.png", "frame_999.png"),  Ordering::Greater);
+        assert_eq!(natural_cmp("frame_002.png",  "frame_010.png"),  Ordering::Less);
+        assert_eq!(natural_cmp("2.png",          "10.png"),         Ordering::Less);
+        assert_eq!(natural_cmp("frame_10_b",     "frame_10_a"),     Ordering::Greater);
+    }
+
+    #[test]
+    fn natural_cmp_compares_non_digits_as_usual() {
+        assert_eq!(natural_cmp("a",       "b"),       Ordering::Less);
+        assert_eq!(natural_cmp("frame",   "frame_1"), Ordering::Less);
+        assert_eq!(natural_cmp("frame_1", "frame"),   Ordering::Greater);
+        assert_eq!(natural_cmp("same_1",  "same_1"),  Ordering::Equal);
+        assert_eq!(natural_cmp("åäö_2",   "åäö_10"),  Ordering::Less);
+    }
+
+    #[test]
+    fn natural_cmp_is_a_total_order_for_leading_zeros() {
+        // Numerically equal, so they fall back to string comparison rather than being Equal
+        assert_eq!(natural_cmp("frame_01", "frame_1"),  Ordering::Less);
+        assert_eq!(natural_cmp("frame_1",  "frame_01"), Ordering::Greater);
+        // Leading zeros only decide when the strings are otherwise equal
+        assert_eq!(natural_cmp("frame_1a", "frame_01b"), Ordering::Less);
+    }
+
+    #[test]
+    fn natural_cmp_handles_numbers_too_large_for_integers() {
+        assert_eq!(natural_cmp("99999999999999999999999", "100000000000000000000000"), Ordering::Less);
+    }
+
+    #[test]
+    fn list_png_files_orders_frames_numerically() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        // The same naming scheme as when writing PNGs, with more frames than 3 digits can hold
+        for i in (0..=1001).rev() {
+            std::fs::write(temp_dir.path().join(format!("frame_{:03}.png", i)), []).unwrap();
+        }
+        std::fs::write(temp_dir.path().join("not_a_png.txt"), []).unwrap();
+
+        let files = list_png_files(temp_dir.path().to_str().unwrap()).unwrap();
+
+        let names: Vec<String> = files.iter()
+            .map(|f| std::path::Path::new(f).file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        let expected: Vec<String> = (0..=1001).map(|i| format!("frame_{:03}.png", i)).collect();
+        assert_eq!(names, expected);
+    }
+}
