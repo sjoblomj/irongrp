@@ -33,6 +33,7 @@ All notable changes to this project will be documented in this file.
 - Corrected bug where converting PNGs from a GRP with more than 1000 frames back to a GRP put the frames in the wrong order, since `frame_1000.png` was sorted before `frame_999.png`. PNG files are now sorted with numbers in their names ordered by value.
 - Corrected bug where the generated shell completion script started with a log line, which broke it when redirected to a file. The message is now written to stderr.
 - Corrected bug where `grp-to-png` with a `--frame-number` beyond the last frame succeeded without writing anything. It is now an error, as it already was for `analyse-grp`.
+- Corrected bug where `analyse-grp` assumed a 6 byte header for WarCraft I style GRPs, whose header is 4 bytes, so the file layout and the overlap check were off by 2 bytes.
 - Removed the silent-truncation safety_break fallback in the RLE encoder and added proptest coverage for Optimised compression.
 
 

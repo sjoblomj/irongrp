@@ -1,5 +1,5 @@
 use crate::error::{Error, InFile, Result};
-use crate::grp::{read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
+use crate::grp::{get_header_size, read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::{validate_frame_number, Args};
 use log::{debug, info, warn};
 use std::collections::HashMap;
@@ -122,34 +122,7 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     println!();
 
     // Analyze for gaps
-    let mut used_ranges: Vec<(u64, u64, String)> = Vec::new();
-    used_ranges.push((0, 6, format!("GRP Header ({} frames)", frames.len())));
-    used_ranges.push((6, 6 + (frames.len() * 8) as u64, "Frame headers".to_string()));
-
-    for (frame_index, frame) in frames.iter().enumerate() {
-        let data_offset = frame.decoded_image_data_offset() as u64;
-        let row_table_end = data_offset + (frame.image_data.row_offsets.len() * 2) as u64;
-        let label = format!("Frame {: >2} row offset table ({} rows)", frame_index, frame.height);
-        used_ranges.push((data_offset, row_table_end, label));
-
-        for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
-            let row_offset = if frame.image_data.grp_type == GrpType::Normal {
-                frame.image_data.row_offsets[i] as u64
-            } else if frame.image_data.grp_type == GrpType::UncompressedExtended {
-                (frame.width as u64 + EXTENDED_IMAGE_WIDTH as u64) * i as u64
-            } else {
-                frame.width as u64 * i as u64
-            };
-
-            let start = data_offset + row_offset;
-            let end = start + row.len() as u64;
-            used_ranges.push((start, end, format!(
-                "Frame {: >2}: Image data for row {: >2} ({} bytes)",
-                frame_index, i, end - start,
-            )));
-        }
-    }
-
+    let used_ranges = used_ranges(&frames, grp_type);
 
     let duplicates = frames_with_identical_image_data(&frames);
     let duplicates_found = !duplicates.is_empty();
@@ -159,7 +132,6 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     if !duplicates_found {
         info!("✔ All frames have unique pixel data");
     }
-    used_ranges.sort_by_key(|r| r.0);
     println!();
 
 
@@ -261,6 +233,43 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Returns the byte ranges of the file that are used by the header, the frame headers and the
+/// image data of each frame, as (start, end, label), sorted by start. `end` is exclusive.
+fn used_ranges(frames: &[GrpFrame], grp_type: GrpType) -> Vec<(u64, u64, String)> {
+    let header_size = get_header_size(grp_type == GrpType::War1) as u64;
+    let frame_headers_end = header_size + frames.len() as u64 * 8;
+
+    let mut used_ranges: Vec<(u64, u64, String)> = Vec::new();
+    used_ranges.push((0, header_size, format!("GRP Header ({} frames)", frames.len())));
+    used_ranges.push((header_size, frame_headers_end, "Frame headers".to_string()));
+
+    for (frame_index, frame) in frames.iter().enumerate() {
+        let data_offset = frame.decoded_image_data_offset() as u64;
+        let row_table_end = data_offset + (frame.image_data.row_offsets.len() * 2) as u64;
+        let label = format!("Frame {: >2} row offset table ({} rows)", frame_index, frame.height);
+        used_ranges.push((data_offset, row_table_end, label));
+
+        for (i, row) in frame.image_data.raw_row_data.iter().enumerate() {
+            let row_offset = if frame.image_data.grp_type == GrpType::Normal {
+                frame.image_data.row_offsets[i] as u64
+            } else if frame.image_data.grp_type == GrpType::UncompressedExtended {
+                (frame.width as u64 + EXTENDED_IMAGE_WIDTH as u64) * i as u64
+            } else {
+                frame.width as u64 * i as u64
+            };
+
+            let start = data_offset + row_offset;
+            let end = start + row.len() as u64;
+            used_ranges.push((start, end, format!(
+                "Frame {: >2}: Image data for row {: >2} ({} bytes)",
+                frame_index, i, end - start,
+            )));
+        }
+    }
+    used_ranges.sort_by_key(|r| r.0);
+    used_ranges
 }
 
 /// Returns groups of frames that have identical dimensions and pixels. Each group is sorted
@@ -371,6 +380,63 @@ mod tests {
         let path = dir.join("extended.grp");
         std::fs::write(&path, data).unwrap();
         path.to_str().unwrap().to_string()
+    }
+
+    /// Writes a WarCraft I style GRP with two 2x2 frames, and returns its path
+    fn write_war1_grp(dir: &std::path::Path) -> String {
+        let mut data = vec![0x02, 0x00, 0x02, 0x02]; // 2 frames, max width and height 2 as u8
+        data.extend([0, 0, 2, 2, 20, 0, 0, 0]); // Frame 0: 2x2 at offset 4 + 2 * 8 = 20
+        data.extend([0, 0, 2, 2, 24, 0, 0, 0]); // Frame 1: 2x2 at offset 24
+        data.extend([1, 2, 3, 4, 5, 6, 7, 8]);  // Image data
+        let path = dir.join("war1.grp");
+        std::fs::write(&path, data).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// Asserts that the non-empty ranges cover the file exactly, without gaps or overlaps
+    fn assert_ranges_cover_file(ranges: &[(u64, u64, String)], file_len: u64) {
+        let mut pos = 0;
+        for (start, end, label) in ranges.iter().filter(|(start, end, _)| start != end) {
+            assert_eq!(*start, pos, "range '{}' should start where the previous one ended", label);
+            pos = *end;
+        }
+        assert_eq!(pos, file_len, "the ranges should end at the end of the file");
+    }
+
+    #[test]
+    fn used_ranges_use_four_byte_header_for_war1_grps() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_war1_grp(temp_dir.path());
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+        assert_eq!(grp_type, GrpType::War1);
+
+        let ranges = used_ranges(&frames, grp_type);
+
+        assert_eq!((ranges[0].0, ranges[0].1), (0, 4),  "GRP header");
+        assert_eq!((ranges[1].0, ranges[1].1), (4, 20), "frame headers");
+        assert_ranges_cover_file(&ranges, std::fs::metadata(&path).unwrap().len());
+    }
+
+    #[test]
+    fn used_ranges_use_six_byte_header_for_other_grps() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_extended_uncompressed_grp(temp_dir.path());
+        let (_, grp_type, frames) = read_grp_file(&path).unwrap();
+
+        let ranges = used_ranges(&frames, grp_type);
+
+        assert_eq!((ranges[0].0, ranges[0].1), (0, 6),  "GRP header");
+        assert_eq!((ranges[1].0, ranges[1].1), (6, 22), "frame headers");
+        assert_ranges_cover_file(&ranges, std::fs::metadata(&path).unwrap().len());
+    }
+
+    #[test]
+    fn analyses_war1_grp() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_war1_grp(temp_dir.path());
+
+        analyse_grp(&make_test_args(&path, None)).expect("expected the whole GRP to be analysed");
+        analyse_grp(&make_test_args(&path, Some(1))).expect("expected frame 1 to be analysed");
     }
 
     #[test]

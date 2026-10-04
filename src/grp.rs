@@ -830,7 +830,7 @@ fn files_to_grp(
     Ok((grp_frames, max_width, max_height))
 }
 
-fn get_header_size(war1_style: bool) -> usize {
+pub(crate) fn get_header_size(war1_style: bool) -> usize {
     if war1_style {
         4
     } else {
