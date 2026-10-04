@@ -27,16 +27,13 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
                 "--analyse-row-number is only supported for GRPs of type Normal".to_string(),
             ));
         }
-        let row_number = if args.analyse_row_number.is_none() || is_uncompressed {
-            frames[frame_number].height + 1
-        } else {
-            args.analyse_row_number.unwrap()
-        };
-        if row_number >= frames[frame_number].height && args.analyse_row_number.is_some() {
-            return Err(Error::InvalidArgument(format!(
-                "Row number {} is out of range; frame {} has {} row(s)",
-                row_number, frame_number, frames[frame_number].height,
-            )));
+        if let Some(row_number) = args.analyse_row_number {
+            if row_number >= frames[frame_number].height {
+                return Err(Error::InvalidArgument(format!(
+                    "Row number {} is out of range; frame {} has {} row(s)",
+                    row_number, frame_number, frames[frame_number].height,
+                )));
+            }
         }
 
         let width = if frames[frame_number].image_data.grp_type != GrpType::UncompressedExtended {
@@ -66,27 +63,24 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
                 );
             }
         }
-        if args.analyse_row_number.is_some() && frames[frame_number].image_data.grp_type == GrpType::Normal {
-            for (i, row) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
-                if row_number == i as u8 {
-                    let start = absolute_row_offset(&frames[frame_number], i);
-                    println!();
-                    info!(
-                        "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
-                        i, i, frames[frame_number].image_data.row_offsets[i], start,
-                    );
+        if let Some(row_number) = args.analyse_row_number {
+            let i = row_number as usize;
+            let row = &frames[frame_number].image_data.raw_row_data[i];
+            let start = absolute_row_offset(&frames[frame_number], i);
+            println!();
+            info!(
+                "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
+                i, i, frames[frame_number].image_data.row_offsets[i], start,
+            );
 
-                    let mut bytes = "".to_string();
-                    let mut buf = vec![0u8; row.len()];
-                    file.seek(SeekFrom::Start(start))?;
-                    file.read_exact(&mut buf)?;
-                    for b in &buf {
-                        bytes.push_str(&format!("{:02X} ", b));
-                    }
-                    info!("  Data ({} bytes): {}", row.len(), &bytes);
-                    break;
-                }
+            let mut bytes = "".to_string();
+            let mut buf = vec![0u8; row.len()];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut buf)?;
+            for b in &buf {
+                bytes.push_str(&format!("{:02X} ", b));
             }
+            info!("  Data ({} bytes): {}", row.len(), &bytes);
         }
 
         return Ok(());
@@ -479,6 +473,59 @@ mod tests {
             args.analyse_row_number = Some(row);
             analyse_grp(&args).unwrap_or_else(|e| panic!("expected row {} to be analysed: {}", row, e));
         }
+    }
+
+    /// Writes a Normal GRP with one frame of 1x255 pixels, the maximum height, and returns its path
+    fn write_grp_with_max_height_frame(dir: &std::path::Path) -> String {
+        let height: u16 = 255;
+        let mut data = vec![0x01, 0x00, 0x01, 0x00, height as u8, 0x00]; // 1 frame, 1x255
+        data.extend([0, 0, 1, height as u8, 14, 0, 0, 0]);               // Image data at offset 14
+        for row in 0..height {
+            data.extend((height * 2 + row * 2).to_le_bytes()); // Row offsets
+        }
+        for row in 0..height {
+            data.extend([0x01, (row % 255) as u8 + 1]); // Each row: copy 1 pixel
+        }
+        let path = dir.join("tall.grp");
+        std::fs::write(&path, data).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn analyses_frame_with_max_height() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_grp_with_max_height_frame(temp_dir.path());
+        log::set_max_level(log::LevelFilter::Info); // Evaluate the arguments to info!
+
+        analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
+        for row in [0, 254] {
+            let mut args = make_test_args(&path, Some(0));
+            args.analyse_row_number = Some(row);
+            analyse_grp(&args).unwrap_or_else(|e| panic!("expected row {} to be analysed: {}", row, e));
+        }
+    }
+
+    #[test]
+    fn rejects_row_number_equal_to_frame_height() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_grp_with_max_height_frame(temp_dir.path());
+
+        let mut args = make_test_args(&path, Some(0));
+        args.analyse_row_number = Some(255);
+        let err = analyse_grp(&args).expect_err("expected row 255 to be out of range");
+        assert!(matches!(err, Error::InvalidArgument(_)));
+        assert!(err.to_string().contains("frame 0 has 255 row(s)"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_row_number_for_uncompressed_grps() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_extended_uncompressed_grp(temp_dir.path());
+
+        let mut args = make_test_args(&path, Some(0));
+        args.analyse_row_number = Some(0);
+        let err = analyse_grp(&args).expect_err("expected --analyse-row-number to be rejected");
+        assert!(matches!(err, Error::InvalidArgument(_)));
     }
 
     #[test]
