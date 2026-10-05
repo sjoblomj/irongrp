@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum, ValueHint};
+use clap::{Parser, Subcommand, ValueEnum, ValueHint};
 use clap_complete::Shell;
 use simplelog::LevelFilter;
 use std::cmp::Ordering;
@@ -15,25 +15,83 @@ use error::InFile;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-pub struct Args {
-    /// Path to the GRP file, or directory containing PNG files
-    #[arg(long, short='i', value_hint = ValueHint::AnyPath,
-          required_unless_present = "generator")]
-    pub input_path: Option<String>,
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
 
-    /// Path to the palette file.
-    #[arg(long, short='p', value_hint = ValueHint::FilePath)]
-    pub pal_path: Option<String>,
+    /// Logging level
+    #[arg(long, value_enum, default_value_t = LogLevel::Info, global = true)]
+    pub log_level: LogLevel,
+}
 
-    /// Output directory if input is a GRP file,
-    /// or output file if input is a directory
-    #[arg(long, short='o', value_hint = ValueHint::AnyPath,
-          required_if_eq_any = [("mode", "grp-to-png"), ("mode", "png-to-grp")])]
-    pub output_path: Option<String>,
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Convert a GRP file to PNG images
+    GrpToPng(GrpToPngArgs),
 
-    /// Mode of operation.
-    #[arg(long, short='m', value_enum, required_unless_present = "generator")]
-    pub mode: Option<OperationMode>,
+    /// Convert a directory of PNG images to a GRP file
+    PngToGrp(PngToGrpArgs),
+
+    /// Inspect the structure of a GRP file
+    #[command(visible_alias = "analyse-grp")]
+    Analyse(AnalyseArgs),
+
+    /// Generate shell completions and write them to stdout
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct GrpToPngArgs {
+    /// Path to the GRP file
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub input: String,
+
+    /// Directory to write the PNG files to. It is created if it does not exist
+    #[arg(value_hint = ValueHint::DirPath)]
+    pub output: String,
+
+    /// Path to the palette file. A greyscale palette is used if omitted
+    #[arg(long, short = 'p', alias = "pal-path", value_hint = ValueHint::FilePath)]
+    pub palette: Option<String>,
+
+    /// Output all frames in one image. GRPs cannot be
+    /// created back from tiled images.
+    #[arg(long)]
+    pub tiled: bool,
+
+    /// Maximum width in pixels of the tiled image.
+    /// If this is less than the maximum frame width of
+    /// the GRP itself, this value will be ignored.
+    #[arg(long, requires = "tiled")]
+    pub max_width: Option<u32>,
+
+    /// Only output the given frame number (0-indexed)
+    #[arg(long, short = 'f', alias = "frame-number", conflicts_with = "tiled")]
+    pub frame: Option<u16>,
+
+    /// Make the background of the PNG images transparent.
+    /// The default behaviour is to use the colour of
+    /// index 0 in the palette.
+    #[arg(long, alias = "use-transparency")]
+    pub transparent: bool,
+}
+
+#[derive(clap::Args)]
+pub struct PngToGrpArgs {
+    /// Directory containing the PNG files. All PNGs in it are used, in natural sort order
+    #[arg(value_hint = ValueHint::DirPath)]
+    pub input: String,
+
+    /// Path of the GRP file to write
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub output: String,
+
+    /// Path to the palette file. A greyscale palette is used if omitted
+    #[arg(long, short = 'p', alias = "pal-path", value_hint = ValueHint::FilePath)]
+    pub palette: Option<String>,
 
     /// Compression type to use when creating GRP files.
     /// If omitted or set to 'auto', it will use 'normal'
@@ -42,47 +100,23 @@ pub struct Args {
     /// of PNGs created from such GRPs. If so, it will use the
     /// corresponding compression, with "uncompressed_" taking
     /// precedence if both are found.
-    #[arg(long, value_enum, default_value_t = CompressionType::Auto)]
-    pub compression_type: CompressionType,
-
-    /// Output all frames in one image. GRPs cannot be
-    /// created back from tiled images.
-    #[arg(long)]
-    pub tiled: bool,
-
-    /// Only applicable when using the 'tiled' argument.
-    /// Maximum width in pixels of the output tiled image.
-    /// If this is less than the maximum frame width of
-    /// the GRP itself, this value will be ignored.
-    #[arg(long, requires = "tiled")]
-    pub max_width: Option<u32>,
-
-    /// Only outputs or analyses the given frame number.
-    #[arg(long, conflicts_with = "tiled")]
-    pub frame_number: Option<u16>,
-
-    /// Output the data of the given row number for the given frame.
-    #[arg(long, requires = "frame_number")]
-    pub analyse_row_number: Option<u8>,
-
-    /// Enable transparency in the PNG images. The default
-    /// behaviour is to use index 0 in the palette.
-    #[arg(long)]
-    pub use_transparency: bool,
-
-    /// Logging level
-    #[arg(long, value_enum, default_value_t = LogLevel::Info)]
-    pub log_level: LogLevel,
-
-    #[arg(long = "generate-shell-completions", value_enum, help = "Generate shell completions")]
-    pub generator: Option<Shell>,
+    #[arg(long, short = 'c', alias = "compression-type", value_enum, default_value_t = CompressionType::Auto)]
+    pub compression: CompressionType,
 }
 
-#[derive(Clone, ValueEnum, PartialEq)]
-pub enum OperationMode {
-    GrpToPng,
-    PngToGrp,
-    AnalyseGrp,
+#[derive(clap::Args)]
+pub struct AnalyseArgs {
+    /// Path to the GRP file
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub input: String,
+
+    /// Only analyse the given frame number (0-indexed)
+    #[arg(long, short = 'f', alias = "frame-number")]
+    pub frame: Option<u16>,
+
+    /// Print the data of the given row number (0-indexed) of the given frame
+    #[arg(long, short = 'r', alias = "analyse-row-number", requires = "frame")]
+    pub row: Option<u8>,
 }
 
 #[derive(Clone, ValueEnum, PartialEq, Debug)]

@@ -168,21 +168,18 @@ function M:preload(job)
 	end
 
     local args = {
-        "--input-path",
-        tostring(job.file.url),
-        "--output-path",
-        tostring(cache_img_url),
-        "--mode",
         "grp-to-png",
+        tostring(job.file.url),
+        tostring(cache_img_url),
         "--tiled",
-        "--use-transparency",
+        "--transparent",
         "--max-width",
         (rt and rt.preview or PREVIEW).max_width,
     }
 
     local pal = effective_palette(get_palette(tostring(job.file.url)))
     if pal then
-        table.insert(args, "--pal-path")
+        table.insert(args, "--palette")
         table.insert(args, pal)
     end
 

@@ -10,12 +10,12 @@ fn shell_completions_contain_only_the_completion_script() {
     for (shell, expected_start) in [
         ("bash",       "_irongrp()"),
         ("zsh",        "#compdef irongrp"),
-        ("fish",       "complete -c irongrp"),
+        ("fish",       "# Print an optspec for argparse"),
         ("elvish",     "\nuse builtin;"),
         ("powershell", "\nusing namespace System.Management.Automation"),
     ] {
         let output = irongrp()
-            .args(["--generate-shell-completions", shell])
+            .args(["completions", shell])
             .output()
             .expect("failed to run irongrp");
 
@@ -55,8 +55,8 @@ fn grp_to_png_rejects_frame_number_out_of_range() {
     let out_dir = temp_dir.path().join("out");
 
     let output = irongrp()
-        .args(["--mode", "grp-to-png", "--input-path", &grp, "--frame-number", "3"])
-        .arg("--output-path").arg(&out_dir)
+        .args(["grp-to-png", &grp]).arg(&out_dir)
+        .args(["--frame", "3"])
         .output()
         .expect("failed to run irongrp");
 
@@ -73,8 +73,8 @@ fn grp_to_png_writes_only_the_requested_frame() {
     let out_dir = temp_dir.path().join("out");
 
     let output = irongrp()
-        .args(["--mode", "grp-to-png", "--input-path", &grp, "--frame-number", "2"])
-        .arg("--output-path").arg(&out_dir)
+        .args(["grp-to-png", &grp]).arg(&out_dir)
+        .args(["--frame", "2"])
         .output()
         .expect("failed to run irongrp");
 
@@ -93,13 +93,13 @@ fn grp_without_frames_is_rejected() {
     let grp = grp.to_str().unwrap();
     let out_dir = temp_dir.path().join("out");
 
+    let out_dir = out_dir.to_str().unwrap();
     for mode_args in [
-        vec!["--mode", "grp-to-png", "--output-path", out_dir.to_str().unwrap()],
-        vec!["--mode", "grp-to-png", "--output-path", out_dir.to_str().unwrap(), "--tiled"],
-        vec!["--mode", "analyse-grp"],
+        vec!["grp-to-png", grp, out_dir],
+        vec!["grp-to-png", grp, out_dir, "--tiled"],
+        vec!["analyse", grp],
     ] {
         let output = irongrp()
-            .args(["--input-path", grp])
             .args(&mode_args)
             .output()
             .expect("failed to run irongrp");
@@ -115,10 +115,62 @@ fn grp_without_frames_is_rejected() {
 
 #[test]
 fn help_describes_how_the_compression_type_is_detected() {
-    let output = irongrp().arg("--help").output().expect("failed to run irongrp");
+    let output = irongrp().args(["png-to-grp", "--help"]).output().expect("failed to run irongrp");
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     // clap may wrap the help text, so compare it with whitespace collapsed
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(help.contains(r#"contains "uncompressed_" or "war1_""#), "{}", help);
+}
+
+#[test]
+fn old_flag_names_are_accepted_as_aliases() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+
+    let output = irongrp()
+        .args(["grp-to-png", &grp]).arg(&out_dir)
+        .args(["--frame-number", "1", "--use-transparency"])
+        .output()
+        .expect("failed to run irongrp");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    let output = irongrp()
+        .args(["analyse-grp", &grp, "--frame-number", "0", "--analyse-row-number", "0"])
+        .output()
+        .expect("failed to run irongrp");
+    // Row analysis is only supported for Normal GRPs, but the flags themselves must be accepted
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--row is only supported for GRPs of type Normal"), "{:?}", stderr);
+}
+
+#[test]
+fn flags_of_other_subcommands_are_rejected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+    let out_dir = out_dir.to_str().unwrap();
+
+    for args in [
+        vec!["png-to-grp", out_dir, &grp, "--tiled"],
+        vec!["png-to-grp", out_dir, &grp, "--frame", "0"],
+        vec!["grp-to-png", &grp, out_dir, "--compression", "normal"],
+        vec!["grp-to-png", &grp, out_dir, "--row", "0"],
+        vec!["analyse", &grp, "--palette", "units.pal"],
+        vec!["analyse", &grp, "--row", "0"], // --row requires --frame
+        vec!["grp-to-png", &grp, out_dir, "--tiled", "--frame", "0"],
+        vec!["grp-to-png", &grp, out_dir, "--max-width", "100"], // --max-width requires --tiled
+    ] {
+        let output = irongrp().args(&args).output().expect("failed to run irongrp");
+        assert_eq!(output.status.code(), Some(2), "expected a usage error for {:?}", args);
+    }
+}
+
+#[test]
+fn input_and_output_are_required() {
+    for args in [vec!["grp-to-png", "a.grp"], vec!["png-to-grp", "dir"], vec!["analyse"], vec![]] {
+        let output = irongrp().args(&args).output().expect("failed to run irongrp");
+        assert_eq!(output.status.code(), Some(2), "expected a usage error for {:?}", args);
+    }
 }

@@ -1,6 +1,6 @@
 use crate::grp::{GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::error::{Error, InFile, Result};
-use crate::{validate_frame_number, Args, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{validate_frame_number, GrpToPngArgs, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use log::{debug, info, warn};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
@@ -10,11 +10,11 @@ pub fn render_and_save_frames_to_png(
     palette: &[[u8; 3]],
     max_frame_width:  u32,
     max_frame_height: u32,
-    args: &Args,
+    args: &GrpToPngArgs,
 ) -> Result<()> {
     let (max_frame_width, max_frame_height) = canvas_size(frames, max_frame_width, max_frame_height);
 
-    if args.tiled && args.frame_number.is_none() {
+    if args.tiled && args.frame.is_none() {
         if frames.is_empty() {
             return Err(Error::InvalidArgument("The GRP has no frames to draw".to_string()));
         }
@@ -49,7 +49,7 @@ pub fn render_and_save_frames_to_png(
         let canvas_width = cols * max_frame_width;
         let canvas_height = (frames.len() as f64 / cols as f64).ceil() as u32 * max_frame_height;
 
-        let pixel_length: usize = if args.use_transparency { 4 } else { 3 }; // RGBA or RGB
+        let pixel_length: usize = if args.transparent { 4 } else { 3 }; // RGBA or RGB
         let mut buffer = vec![0u8; pixel_length * (canvas_width * canvas_height) as usize];
 
         for (i, frame) in frames.iter().enumerate() {
@@ -58,7 +58,7 @@ pub fn render_and_save_frames_to_png(
             let base_x = col * max_frame_width;
             let base_y = row * max_frame_height;
 
-            let temp_img = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency)?;
+            let temp_img = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.transparent)?;
 
             for y in 0..max_frame_height {
                 for x in 0..max_frame_width {
@@ -70,19 +70,19 @@ pub fn render_and_save_frames_to_png(
             }
         }
 
-        let output_path = format!("{}/all_frames.png", args.output_path.as_deref().unwrap());
-        save_pixels_to_image_file(buffer, &output_path, args.use_transparency, canvas_width, canvas_height)
+        let output_path = format!("{}/all_frames.png", args.output);
+        save_pixels_to_image_file(buffer, &output_path, args.transparent, canvas_width, canvas_height)
             .in_file(&output_path)?;
         info!("Saved all frames to {}", output_path);
 
     } else {
         // Non-tiled mode - save each frame as a separate image.
-        validate_frame_number(args.frame_number, frames.len())?;
+        validate_frame_number(args.frame, frames.len())?;
         for (i, frame) in frames.iter().enumerate() {
-            if args.frame_number.is_some() && args.frame_number != Some(i as u16) {
+            if args.frame.is_some() && args.frame != Some(i as u16) {
                 continue;
             }
-            let buffer = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.use_transparency)?;
+            let buffer = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.transparent)?;
 
             let grp_type = if frame.image_data.grp_type == GrpType::Normal {
                 ""
@@ -92,13 +92,13 @@ pub fn render_and_save_frames_to_png(
                 &format!("{}_", UNCOMPRESSED_FILENAME)
             };
 
-            let output_path = format!("{}/{}frame_{:03}.png", args.output_path.as_deref().unwrap(), grp_type, i);
-            save_pixels_to_image_file(buffer, &output_path, args.use_transparency, max_frame_width, max_frame_height)
+            let output_path = format!("{}/{}frame_{:03}.png", args.output, grp_type, i);
+            save_pixels_to_image_file(buffer, &output_path, args.transparent, max_frame_width, max_frame_height)
                 .in_file(&output_path)?;
             info!("Saved frame {:2} to {}", i, output_path);
         }
 
-        if args.frame_number.is_none() {
+        if args.frame.is_none() {
             let duplicates = find_identical_frames(frames);
             for indices in duplicates.shared_image_data {
                 info!("Identical frames: {:?}", indices);
@@ -221,7 +221,6 @@ pub fn png_to_pixels(png_file_name: &str, palette: &[[u8; 3]]) -> Result<Paletti
 mod tests {
     use super::*;
     use crate::grp::ImageData;
-    use crate::{CompressionType, LogLevel};
     use palpngrs::greyscale_palette;
     use std::path::Path;
 
@@ -241,20 +240,15 @@ mod tests {
         }
     }
 
-    fn make_test_args(output_path: &str, frame_number: Option<u16>) -> Args {
-        Args {
-            input_path:         None,
-            pal_path:           None,
-            output_path:        Some(output_path.to_string()),
-            mode:               None,
-            compression_type:   CompressionType::Auto,
-            tiled:              false,
-            max_width:          None,
-            frame_number,
-            analyse_row_number: None,
-            use_transparency:   false,
-            log_level:          LogLevel::Info,
-            generator:          None,
+    fn make_test_args(output_path: &str, frame: Option<u16>) -> GrpToPngArgs {
+        GrpToPngArgs {
+            input:       String::new(),
+            output:      output_path.to_string(),
+            palette:     None,
+            tiled:       false,
+            max_width:   None,
+            frame,
+            transparent: false,
         }
     }
 

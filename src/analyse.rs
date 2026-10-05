@@ -1,6 +1,6 @@
 use crate::error::{Error, InFile, Result};
 use crate::grp::{get_header_size, read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
-use crate::{validate_frame_number, Args};
+use crate::{validate_frame_number, AnalyseArgs};
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::fs::File;
@@ -8,8 +8,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 /// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
 /// ranges, and file layout.
-pub fn analyse_grp(args: &Args) -> Result<()> {
-    let input_path = args.input_path.as_deref().unwrap();
+pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
+    let input_path = args.input.as_str();
     let (header, grp_type, frames) = read_grp_file(input_path)?;
     let is_uncompressed = grp_type != GrpType::Normal;
 
@@ -19,15 +19,15 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
     println!();
     info!("GRP type: {:?}", grp_type);
 
-    validate_frame_number(args.frame_number, frames.len())?;
-    if let Some(frame_number) = args.frame_number {
+    validate_frame_number(args.frame, frames.len())?;
+    if let Some(frame_number) = args.frame {
         let frame_number = frame_number as usize;
-        if args.analyse_row_number.is_some() && is_uncompressed {
+        if args.row.is_some() && is_uncompressed {
             return Err(Error::InvalidArgument(
-                "--analyse-row-number is only supported for GRPs of type Normal".to_string(),
+                "--row is only supported for GRPs of type Normal".to_string(),
             ));
         }
-        if let Some(row_number) = args.analyse_row_number {
+        if let Some(row_number) = args.row {
             if row_number >= frames[frame_number].height {
                 return Err(Error::InvalidArgument(format!(
                     "Row number {} is out of range; frame {} has {} row(s)",
@@ -63,7 +63,7 @@ pub fn analyse_grp(args: &Args) -> Result<()> {
                 );
             }
         }
-        if let Some(row_number) = args.analyse_row_number {
+        if let Some(row_number) = args.row {
             let i = row_number as usize;
             let row = &frames[frame_number].image_data.raw_row_data[i];
             let start = absolute_row_offset(&frames[frame_number], i);
@@ -338,22 +338,12 @@ fn frames_with_identical_image_data(frames: &[GrpFrame]) -> Vec<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::grp::ImageData;
-    use crate::{CompressionType, LogLevel, OperationMode};
 
-    fn make_test_args(input_path: &str, frame_number: Option<u16>) -> Args {
-        Args {
-            input_path:         Some(input_path.to_string()),
-            pal_path:           None,
-            output_path:        None,
-            mode:               Some(OperationMode::AnalyseGrp),
-            compression_type:   CompressionType::Auto,
-            tiled:              false,
-            max_width:          None,
-            frame_number,
-            analyse_row_number: None,
-            use_transparency:   false,
-            log_level:          LogLevel::Info,
-            generator:          None,
+    fn make_test_args(input_path: &str, frame: Option<u16>) -> AnalyseArgs {
+        AnalyseArgs {
+            input: input_path.to_string(),
+            frame,
+            row:   None,
         }
     }
 
@@ -519,7 +509,7 @@ mod tests {
         analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
         for row in [0, 1] {
             let mut args = make_test_args(&path, Some(0));
-            args.analyse_row_number = Some(row);
+            args.row = Some(row);
             analyse_grp(&args).unwrap_or_else(|e| panic!("expected row {} to be analysed: {}", row, e));
         }
     }
@@ -549,7 +539,7 @@ mod tests {
         analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
         for row in [0, 254] {
             let mut args = make_test_args(&path, Some(0));
-            args.analyse_row_number = Some(row);
+            args.row = Some(row);
             analyse_grp(&args).unwrap_or_else(|e| panic!("expected row {} to be analysed: {}", row, e));
         }
     }
@@ -560,7 +550,7 @@ mod tests {
         let path = write_grp_with_max_height_frame(temp_dir.path());
 
         let mut args = make_test_args(&path, Some(0));
-        args.analyse_row_number = Some(255);
+        args.row = Some(255);
         let err = analyse_grp(&args).expect_err("expected row 255 to be out of range");
         assert!(matches!(err, Error::InvalidArgument(_)));
         assert!(err.to_string().contains("frame 0 has 255 row(s)"), "{}", err);
@@ -572,7 +562,7 @@ mod tests {
         let path = write_extended_uncompressed_grp(temp_dir.path());
 
         let mut args = make_test_args(&path, Some(0));
-        args.analyse_row_number = Some(0);
+        args.row = Some(0);
         let err = analyse_grp(&args).expect_err("expected --analyse-row-number to be rejected");
         assert!(matches!(err, Error::InvalidArgument(_)));
     }

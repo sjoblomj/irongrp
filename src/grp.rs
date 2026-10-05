@@ -1,6 +1,6 @@
 use crate::png::{png_to_pixels, render_and_save_frames_to_png};
 use crate::error::{Error, InFile, Result};
-use crate::{list_png_files, Args, CompressionType, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
+use crate::{list_png_files, CompressionType, GrpToPngArgs, PngToGrpArgs, UNCOMPRESSED_FILENAME, WAR1_FILENAME};
 use clap::ValueEnum;
 use log::{debug, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
@@ -1052,9 +1052,9 @@ pub fn read_grp_file(path: impl AsRef<Path>) -> Result<(GrpHeader, GrpType, Vec<
 }
 
 /// Converts a GRP to PNGs
-pub fn grp_to_png(args: &Args) -> Result<()> {
-    let palette = get_palette(args)?;
-    let (header, _, frames) = read_grp_file(args.input_path.as_deref().unwrap())?;
+pub fn grp_to_png(args: &GrpToPngArgs) -> Result<()> {
+    let palette = get_palette(args.palette.as_deref())?;
+    let (header, _, frames) = read_grp_file(&args.input)?;
 
     render_and_save_frames_to_png(
         &frames,
@@ -1065,8 +1065,8 @@ pub fn grp_to_png(args: &Args) -> Result<()> {
     )
 }
 
-fn get_palette(args: &Args) -> Result<Vec<[u8; 3]>> {
-    if let Some(path) = &args.pal_path {
+fn get_palette(palette_path: Option<&str>) -> Result<Vec<[u8; 3]>> {
+    if let Some(path) = palette_path {
         read_rgb_palette(path).in_file(path)
     } else {
         warn!("No palette given - defaulting to greyscale palette");
@@ -1075,11 +1075,11 @@ fn get_palette(args: &Args) -> Result<Vec<[u8; 3]>> {
 }
 
 /// Converts PNGs to a GRP
-pub fn png_to_grp(args: &Args) -> Result<()> {
-    let out_path  = args.output_path.as_deref().unwrap();
-    let palette   = get_palette(args)?;
-    let png_files = list_png_files(&args.input_path.clone().unwrap())?;
-    let compression_type = determine_compression_type(&png_files, &args.compression_type);
+pub fn png_to_grp(args: &PngToGrpArgs) -> Result<()> {
+    let out_path  = args.output.as_str();
+    let palette   = get_palette(args.palette.as_deref())?;
+    let png_files = list_png_files(&args.input)?;
+    let compression_type = determine_compression_type(&png_files, &args.compression);
 
     let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &compression_type)?;
     let grp_header = create_grp_header(&grp_frames, max_width, max_height);

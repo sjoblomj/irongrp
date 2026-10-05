@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [0.6.0] - unreleased
 
+### Breaking changes
+- The command-line interface uses subcommands instead of `--mode`, and takes the input and output paths as positional arguments:
+  - `--mode grp-to-png --input-path X --output-path Y` is now `grp-to-png X Y`
+  - `--mode png-to-grp --input-path X --output-path Y` is now `png-to-grp X Y`
+  - `--mode analyse-grp --input-path X` is now `analyse X` (`analyse-grp` is accepted as an alias)
+  - `--generate-shell-completions SHELL` is now `completions SHELL`
+
+  Flags that do not apply to a subcommand are now rejected, instead of silently ignored.
+- Renamed flags: `--pal-path` to `--palette`, `--use-transparency` to `--transparent`, `--frame-number` to `--frame`, `--compression-type` to `--compression` and `--analyse-row-number` to `--row`. The old names are still accepted. New short forms: `-c` for `--compression`, `-f` for `--frame` and `-r` for `--row`.
+
 ### Added
 - Ability to specify and load palettes (up to 9) in the yazi integration.
 - Using `tempfile` for tests for added robustness.
