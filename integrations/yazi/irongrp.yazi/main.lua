@@ -173,6 +173,7 @@ function M:preload(job)
         tostring(cache_img_url),
         "--tiled",
         "--transparent",
+        "--force",
         "--max-width",
         (rt and rt.preview or PREVIEW).max_width,
     }

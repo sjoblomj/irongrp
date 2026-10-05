@@ -4,6 +4,8 @@ use crate::{validate_frame_number, GrpToPngArgs, UNCOMPRESSED_FILENAME, WAR1_FIL
 use log::{debug, info, warn};
 use palpngrs::{draw_image_to_pixel_buffer, read_png, save_pixels_to_image_file, Offset, Palette0Pixels, PalettizedImageWithMetadata, Size};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 
 pub fn render_and_save_frames_to_png(
     frames: &[GrpFrame],
@@ -24,6 +26,8 @@ pub fn render_and_save_frames_to_png(
         // If the user has requested a max_width, then scale down to try to accommodate for that.
         // So, if there are 25 frames, but the user has requested a max_width that only fits
         // 3 frames, then the resulting image would be 3x9
+        check_output_files(args, &[TILED_FILENAME.to_string()])?;
+
         let mut cols = (frames.len() as f64).sqrt().floor() as u32;
         debug!(
             "Saving all frames as one PNG. Columns: {}, max-frame-size: {}x{}, requested max width: {}",
@@ -70,7 +74,7 @@ pub fn render_and_save_frames_to_png(
             }
         }
 
-        let output_path = format!("{}/all_frames.png", args.output);
+        let output_path = format!("{}/{}", args.output, TILED_FILENAME);
         save_pixels_to_image_file(buffer, &output_path, args.transparent, canvas_width, canvas_height)
             .in_file(&output_path)?;
         info!("Saved all frames to {}", output_path);
@@ -78,21 +82,16 @@ pub fn render_and_save_frames_to_png(
     } else {
         // Non-tiled mode - save each frame as a separate image.
         validate_frame_number(args.frame, frames.len())?;
-        for (i, frame) in frames.iter().enumerate() {
-            if args.frame.is_some() && args.frame != Some(i as u16) {
-                continue;
-            }
+        let frames_to_save: Vec<(usize, &GrpFrame)> = frames.iter().enumerate()
+            .filter(|(i, _)| args.frame.is_none() || args.frame == Some(*i as u16))
+            .collect();
+        let file_names: Vec<String> = frames_to_save.iter().map(|(i, frame)| frame_png_name(frame, *i)).collect();
+        check_output_files(args, &file_names)?;
+
+        for ((i, frame), file_name) in frames_to_save.into_iter().zip(file_names) {
             let buffer = image_to_buffer(frame, palette, max_frame_width, max_frame_height, args.transparent)?;
 
-            let grp_type = if frame.image_data.grp_type == GrpType::Normal {
-                ""
-            } else if frame.image_data.grp_type == GrpType::War1 {
-                &format!("{}_", WAR1_FILENAME)
-            } else {
-                &format!("{}_", UNCOMPRESSED_FILENAME)
-            };
-
-            let output_path = format!("{}/{}frame_{:03}.png", args.output, grp_type, i);
+            let output_path = format!("{}/{}", args.output, file_name);
             save_pixels_to_image_file(buffer, &output_path, args.transparent, max_frame_width, max_frame_height)
                 .in_file(&output_path)?;
             info!("Saved frame {:2} to {}", i, output_path);
@@ -110,6 +109,75 @@ pub fn render_and_save_frames_to_png(
     }
 
     Ok(())
+}
+
+const TILED_FILENAME: &str = "all_frames.png";
+
+/// The name of the PNG that frame number `index` is saved as, e.g. "uncompressed_frame_007.png".
+/// The prefix tells `png-to-grp` which compression type to use when converting it back.
+fn frame_png_name(frame: &GrpFrame, index: usize) -> String {
+    let grp_type = match frame.image_data.grp_type {
+        GrpType::Normal => "".to_string(),
+        GrpType::War1   => format!("{}_", WAR1_FILENAME),
+        GrpType::Uncompressed | GrpType::UncompressedExtended => format!("{}_", UNCOMPRESSED_FILENAME),
+    };
+    format!("{}frame_{:03}.png", grp_type, index)
+}
+
+/// Whether `file_name` looks like the name of a PNG written by [`frame_png_name`].
+fn is_frame_png_name(file_name: &str) -> bool {
+    let name = file_name.to_ascii_lowercase();
+    let name = name.strip_prefix(&format!("{}_", UNCOMPRESSED_FILENAME))
+        .or_else(|| name.strip_prefix(&format!("{}_", WAR1_FILENAME)))
+        .unwrap_or(&name);
+    name.strip_prefix("frame_")
+        .and_then(|rest| rest.strip_suffix(".png"))
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Checks that saving `file_names` in the output directory does not overwrite existing files,
+/// and, when all frames are saved, that the directory has no frame PNGs from before. Such
+/// leftovers, e.g. from a GRP with more frames, would be picked up by `png-to-grp` together with
+/// the new frames. With `--force`, existing files are overwritten and leftovers are warned about.
+fn check_output_files(args: &GrpToPngArgs, file_names: &[String]) -> Result<()> {
+    let dir = Path::new(&args.output);
+    let mut conflicts: Vec<String> = file_names.iter()
+        .filter(|name| dir.join(name).exists())
+        .cloned()
+        .collect();
+
+    let mut leftovers = Vec::new();
+    if !args.tiled && args.frame.is_none() {
+        let new_names: HashSet<&str> = file_names.iter().map(String::as_str).collect();
+        for entry in fs::read_dir(dir).in_file(dir)? {
+            let name = entry.in_file(dir)?.file_name().to_string_lossy().into_owned();
+            if is_frame_png_name(&name) && !new_names.contains(name.as_str()) {
+                leftovers.push(name);
+            }
+        }
+        leftovers.sort();
+    }
+
+    if args.force {
+        if let Some(example) = leftovers.first() {
+            warn!(
+                "'{}' contains {} frame PNG(s) that are not part of this GRP, such as '{}'. \
+                They are left as they are, but png-to-grp would include them.",
+                args.output, leftovers.len(), example,
+            );
+        }
+        return Ok(());
+    }
+    conflicts.append(&mut leftovers);
+    conflicts.sort();
+    match conflicts.first() {
+        None => Ok(()),
+        Some(example) => Err(Error::InvalidArgument(format!(
+            "'{}' already contains {} frame PNG(s), such as '{}'. Use --force to overwrite them, \
+            or choose an empty output directory",
+            args.output, conflicts.len(), example,
+        ))),
+    }
 }
 
 /// The size of the canvas to draw each frame on: the max width and height from the GRP header,
@@ -249,6 +317,7 @@ mod tests {
             max_width:   None,
             frame,
             transparent: false,
+            force:       false,
         }
     }
 
@@ -356,6 +425,77 @@ mod tests {
     }
 
     #[test]
+    fn recognises_names_of_frame_pngs() {
+        for name in ["frame_000.png", "frame_1000.png", "uncompressed_frame_007.png", "war1_frame_12.PNG"] {
+            assert!(is_frame_png_name(name), "{}", name);
+        }
+        for name in ["all_frames.png", "frame_.png", "frame_00a.png", "frame_000.png.bak", "my_frame_000.png", "f.png"] {
+            assert!(!is_frame_png_name(name), "{}", name);
+        }
+    }
+
+    fn file_names_in(dir: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir).unwrap()
+            .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn refuses_to_overwrite_existing_pngs_without_force() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+        let frames = vec![make_test_frame(10, 4, 4), make_test_frame(20, 4, 4)];
+        fs::write(temp_dir.path().join("frame_001.png"), "not a PNG").unwrap();
+
+        for frame in [None, Some(1)] {
+            let err = render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, frame))
+                .expect_err("expected the existing PNG not to be overwritten");
+            assert!(err.to_string().contains("Use --force"), "{}", err);
+        }
+        assert_eq!(file_names_in(dir), vec!["frame_001.png"], "expected nothing to be written");
+        assert_eq!(fs::read(temp_dir.path().join("frame_001.png")).unwrap(), b"not a PNG");
+
+        let mut args = make_test_args(dir, None);
+        args.force = true;
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
+        assert_eq!(png_size(&format!("{}/frame_001.png", dir)), (4, 4));
+    }
+
+    #[test]
+    fn refuses_to_mix_new_frames_with_leftover_frames_without_force() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path().to_str().unwrap();
+        let palette = greyscale_palette();
+        let frames = vec![make_test_frame(10, 4, 4), make_test_frame(20, 4, 4)];
+        // Left from converting a GRP with more frames
+        fs::write(temp_dir.path().join("frame_002.png"), "old").unwrap();
+        fs::write(temp_dir.path().join("notes.txt"), "unrelated").unwrap();
+
+        let err = render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, None))
+            .expect_err("expected the leftover frame to be reported");
+        assert!(err.to_string().contains("'frame_002.png'"), "{}", err);
+
+        // A single frame, or a tiled image, does not replace the whole set of frames
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &make_test_args(dir, Some(0))).unwrap();
+        let mut args = make_test_args(dir, None);
+        args.tiled = true;
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
+        assert_eq!(file_names_in(dir), vec!["all_frames.png", "frame_000.png", "frame_002.png", "notes.txt"]);
+
+        // With --force, the frames are written and the leftover is kept
+        let mut args = make_test_args(dir, None);
+        args.force = true;
+        render_and_save_frames_to_png(&frames, &palette, 4, 4, &args).unwrap();
+        assert_eq!(
+            file_names_in(dir),
+            vec!["all_frames.png", "frame_000.png", "frame_001.png", "frame_002.png", "notes.txt"],
+        );
+    }
+
+    #[test]
     fn saves_frames_extending_beyond_header_size() {
         let temp_dir = tempfile::tempdir().unwrap();
         let dir = temp_dir.path().to_str().unwrap();
@@ -365,9 +505,10 @@ mod tests {
             make_test_frame_with_offsets(20, 2, 2, 1, 1), // Extends to 3x3
         ];
 
+        let mut args = make_test_args(dir, None);
+        args.force = true; // The second iteration overwrites the PNGs of the first
         for (header_width, header_height) in [(2, 2), (0, 0)] {
-            render_and_save_frames_to_png(&frames, &palette, header_width, header_height, &make_test_args(dir, None))
-                .unwrap();
+            render_and_save_frames_to_png(&frames, &palette, header_width, header_height, &args).unwrap();
 
             for i in 0..frames.len() {
                 let path = format!("{}/frame_{:03}.png", dir, i);

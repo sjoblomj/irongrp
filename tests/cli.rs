@@ -209,3 +209,47 @@ fn log_messages_go_to_stderr() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Conversion complete"), "{:?}", stderr);
 }
+
+#[test]
+fn png_to_grp_requires_an_existing_input_directory() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 1);
+    let out = temp_dir.path().join("out.grp");
+
+    for input in [grp.clone(), temp_dir.path().join("missing").to_str().unwrap().to_string()] {
+        let output = irongrp()
+            .args(["png-to-grp", &input]).arg(&out)
+            .output()
+            .expect("failed to run irongrp");
+
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("is not an existing directory"), "for {}: {:?}", input, stderr);
+    }
+}
+
+#[test]
+fn grp_to_png_and_back_requires_force_to_overwrite() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+    let new_grp = temp_dir.path().join("new.grp");
+
+    let run = |args: &[&std::ffi::OsStr]| irongrp().args(args).output().expect("failed to run irongrp");
+    let grp_to_png = ["grp-to-png".as_ref(), grp.as_ref(), out_dir.as_os_str()];
+    let png_to_grp = ["png-to-grp".as_ref(), out_dir.as_os_str(), new_grp.as_os_str()];
+    let force: &std::ffi::OsStr = "--force".as_ref();
+
+    assert!(run(&grp_to_png).status.success());
+    assert!(run(&png_to_grp).status.success());
+
+    for args in [&grp_to_png, &png_to_grp] {
+        let output = run(args);
+        assert!(!output.status.success(), "expected {:?} to refuse to overwrite", args);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Use --force"));
+
+        let output = run(&[&args[..], &[force]].concat());
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert_eq!(std::fs::read(&grp).unwrap(), std::fs::read(&new_grp).unwrap());
+}

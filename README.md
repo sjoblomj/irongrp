@@ -93,6 +93,8 @@ cargo test
 ### `irongrp grp-to-png <INPUT> <OUTPUT>`
 Converts the GRP file `INPUT` to PNGs in the directory `OUTPUT`, which is created if it does not exist.
 
+Existing files are not overwritten unless `--force` is given. When extracting all frames, IronGRP also refuses to write into a directory that already contains frame PNGs (such as `frame_012.png`), since `png-to-grp` would otherwise mix them with the new frames, e.g. when the directory was used for a GRP with more frames. With `--force`, such leftover PNGs are kept as they are, and a warning names them.
+
 | Flag                  | Description                                                                                    |
 |-----------------------|------------------------------------------------------------------------------------------------|
 | `-p`, `--palette`     | Path to the palette file. Will use greyscale palette if argument is not given                  |
@@ -100,6 +102,7 @@ Converts the GRP file `INPUT` to PNGs in the directory `OUTPUT`, which is create
 | `--max-width`         | Maximum width of the tiled image in pixels. Requires `--tiled`                                 |
 | `-f`, `--frame`       | Only output the given frame number (0-indexed). Cannot be combined with `--tiled`              |
 | `--transparent`       | Creates .png with transparent background instead of using the colour in palette index 0        |
+| `--force`             | Overwrite existing PNGs. See below                                                             |
 
 ### `irongrp png-to-grp <INPUT> <OUTPUT>`
 Converts all PNGs in the directory `INPUT` to the GRP file `OUTPUT`.
@@ -108,6 +111,9 @@ Converts all PNGs in the directory `INPUT` to the GRP file `OUTPUT`.
 |-----------------------|------------------------------------------------------------------------------------------------|
 | `-p`, `--palette`     | Path to the palette file. Will use greyscale palette if argument is not given                  |
 | `-c`, `--compression` | `normal`, `optimised`, `uncompressed`, `war1` or `auto` (default: `auto`). See the Compression section below |
+| `--force`             | Overwrite `OUTPUT` if it exists                                                                |
+
+The GRP is written to a temporary file that is renamed to `OUTPUT` once complete, so a failed conversion never leaves a partially written GRP behind.
 
 ### `irongrp analyse <INPUT>`
 Inspects the structure of the GRP file `INPUT`. Also available as `analyse-grp`.

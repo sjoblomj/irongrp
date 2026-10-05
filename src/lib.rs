@@ -77,6 +77,10 @@ pub struct GrpToPngArgs {
     /// index 0 in the palette.
     #[arg(long, alias = "use-transparency")]
     pub transparent: bool,
+
+    /// Overwrite existing PNGs in the output directory
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(clap::Args)]
@@ -102,6 +106,10 @@ pub struct PngToGrpArgs {
     /// precedence if both are found.
     #[arg(long, short = 'c', alias = "compression-type", value_enum, default_value_t = CompressionType::Auto)]
     pub compression: CompressionType,
+
+    /// Overwrite the output file if it exists
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(clap::Args)]

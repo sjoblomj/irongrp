@@ -40,6 +40,11 @@ fn run(command: &Commands) -> Result<()> {
         },
 
         Commands::PngToGrp(args) => {
+            if !Path::new(&args.input).is_dir() {
+                return Err(Error::InvalidArgument(format!(
+                    "Input path '{}' is not an existing directory", args.input,
+                )));
+            }
             if Path::new(&args.output).is_dir() {
                 return Err(Error::InvalidArgument(format!(
                     "Output path '{}' is a directory; expected a file path", args.output,

@@ -5,9 +5,9 @@ use clap::ValueEnum;
 use log::{debug, info, trace, warn};
 use palpngrs::{greyscale_palette, read_rgb_palette, PalettizedImageWithMetadata};
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Set in the image data offset of frames of Extended Uncompressed GRPs, which are wider than 255
 const EXTENDED_OFFSET_BIT: u32 = 0x8000_0000;
@@ -756,7 +756,7 @@ fn create_grp_header(frames: &[GrpFrame], max_width: u16, max_height: u16) -> Gr
 
 /// Given a path, GrpHeader and a set of GrpFrames, this function writes a GRP file
 /// to the given path.
-fn write_grp_file(path: &str, header: &GrpHeader, frames: &[GrpFrame], compression_type: &CompressionType) -> Result<()> {
+fn write_grp_file(path: &Path, header: &GrpHeader, frames: &[GrpFrame], compression_type: &CompressionType) -> Result<()> {
     let mut file = File::create(path)?;
 
     // Write header
@@ -1077,13 +1077,34 @@ fn get_palette(palette_path: Option<&str>) -> Result<Vec<[u8; 3]>> {
 /// Converts PNGs to a GRP
 pub fn png_to_grp(args: &PngToGrpArgs) -> Result<()> {
     let out_path  = args.output.as_str();
+    if !args.force && Path::new(out_path).exists() {
+        return Err(Error::InvalidArgument(format!(
+            "'{}' already exists. Use --force to overwrite it", out_path,
+        )));
+    }
     let palette   = get_palette(args.palette.as_deref())?;
     let png_files = list_png_files(&args.input)?;
     let compression_type = determine_compression_type(&png_files, &args.compression);
 
     let (grp_frames, max_width, max_height) = files_to_grp(png_files, &palette, &compression_type)?;
     let grp_header = create_grp_header(&grp_frames, max_width, max_height);
-    write_grp_file(out_path, &grp_header, &grp_frames, &compression_type).in_file(out_path)
+
+    // Write to a temporary file next to the destination and rename it into place, so that a
+    // failure part way through never leaves a truncated GRP at the destination
+    let temp_path = temp_path_for(Path::new(out_path));
+    let result = write_grp_file(&temp_path, &grp_header, &grp_frames, &compression_type)
+        .and_then(|()| fs::rename(&temp_path, out_path).map_err(Error::from));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result.in_file(out_path)
+}
+
+/// A path in the same directory as `path`, for writing a file that is then renamed to `path`.
+/// Renaming is only atomic within the same file system, hence the same directory.
+fn temp_path_for(path: &Path) -> PathBuf {
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()))
 }
 
 
@@ -1101,6 +1122,52 @@ mod tests {
         img.save(path).expect("Failed to save test PNG");
     }
 
+
+    fn make_png_to_grp_args(input: &str, output: &str) -> PngToGrpArgs {
+        PngToGrpArgs {
+            input:       input.to_string(),
+            output:      output.to_string(),
+            palette:     None,
+            compression: CompressionType::Auto,
+            force:       false,
+        }
+    }
+
+    #[test]
+    fn png_to_grp_refuses_to_overwrite_existing_grp_without_force() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let png_dir = temp_dir.path().join("pngs");
+        fs::create_dir(&png_dir).unwrap();
+        create_test_png(png_dir.join("frame_000.png").to_str().unwrap(), [5, 5, 5], 2, 2);
+        let grp_path = temp_dir.path().join("out.grp");
+        fs::write(&grp_path, "old").unwrap();
+
+        let mut args = make_png_to_grp_args(png_dir.to_str().unwrap(), grp_path.to_str().unwrap());
+        let err = png_to_grp(&args).expect_err("expected the existing GRP not to be overwritten");
+        assert!(err.to_string().contains("Use --force"), "{}", err);
+        assert_eq!(fs::read(&grp_path).unwrap(), b"old");
+
+        args.force = true;
+        png_to_grp(&args).unwrap();
+        let (header, _, _) = read_grp_file(grp_path.to_str().unwrap()).unwrap();
+        assert_eq!(header.frame_count, 1);
+        let names: Vec<_> = fs::read_dir(temp_dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2, "expected no temporary file to be left: {:?}", names);
+    }
+
+    #[test]
+    fn png_to_grp_leaves_no_file_behind_on_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let png_dir = temp_dir.path().join("pngs");
+        fs::create_dir(&png_dir).unwrap();
+        create_test_png(png_dir.join("frame_000.png").to_str().unwrap(), [5, 5, 5], 2, 2);
+        let grp_path = temp_dir.path().join("missing_dir").join("out.grp");
+
+        let args = make_png_to_grp_args(png_dir.to_str().unwrap(), grp_path.to_str().unwrap());
+        png_to_grp(&args).expect_err("expected writing into a missing directory to fail");
+        assert!(!grp_path.exists());
+        assert_eq!(fs::read_dir(temp_dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn test_malformed_header() {
@@ -1512,7 +1579,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("roundtrip.grp");
         let path = path.to_str().unwrap();
-        write_grp_file(path, &header, &frames, &compression_type).unwrap();
+        write_grp_file(Path::new(path), &header, &frames, &compression_type).unwrap();
 
         let (read_header, grp_type, read_frames) = read_grp_file(path).unwrap();
         let context = format!("max size {:?}, {} frame(s)", max_size, images.len());
@@ -2163,7 +2230,7 @@ mod tests {
             vec![file_a, file_b], &palette, &compression_type,
         ).unwrap();
         let header = create_grp_header(&frames, max_width, max_height);
-        write_grp_file(&grp_path, &header, &frames, &compression_type).unwrap();
+        write_grp_file(Path::new(&grp_path), &header, &frames, &compression_type).unwrap();
 
         let (_, _, read_frames) = read_grp_file(&grp_path).unwrap();
         assert_eq!(read_frames.len(), 2);
