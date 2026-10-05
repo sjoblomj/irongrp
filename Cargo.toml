@@ -26,10 +26,6 @@ image = "0.25.6"
 proptest = "1.6.0"
 tempfile = "3.27.0"
 
-# Local override during development; remove this block once palpngrs 0.3.0 is published.
-[patch.crates-io]
-palpngrs = { path = "../palpngrs" }
-
 [profile.release]
 opt-level = 3         # Optimize for maximum performance
 lto = true            # Enable Link-Time Optimization for smaller binaries

@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.6.0] - unreleased
+## [0.6.0] - 2026-10-05
 
 ### Breaking changes
 - The command-line interface uses subcommands instead of `--mode`, and takes the input and output paths as positional arguments:
