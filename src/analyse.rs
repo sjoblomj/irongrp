@@ -1,14 +1,18 @@
 use crate::error::{Error, InFile, Result};
 use crate::grp::{get_header_size, read_grp_file, GrpFrame, GrpType, EXTENDED_IMAGE_WIDTH};
 use crate::{validate_frame_number, AnalyseArgs};
-use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
-/// Analyzes a GRP file and prints information about header correctness, unused space, overlapping
-/// ranges, and file layout.
+/// Analyzes a GRP file and prints a report to stdout with information about header correctness,
+/// unused space, overlapping ranges, and file layout.
 pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
+    analyse_grp_to(args, &mut std::io::stdout().lock())
+}
+
+/// Like [`analyse_grp`], but writes the report to `out`.
+pub fn analyse_grp_to(args: &AnalyseArgs, out: &mut impl Write) -> Result<()> {
     let input_path = args.input.as_str();
     let (header, grp_type, frames) = read_grp_file(input_path)?;
     let is_uncompressed = grp_type != GrpType::Normal;
@@ -16,8 +20,8 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
     let mut file = File::open(input_path).in_file(input_path)?;
     let file_len = file.metadata().in_file(input_path)?.len();
 
-    println!();
-    info!("GRP type: {:?}", grp_type);
+    writeln!(out)?;
+    writeln!(out, "GRP type: {:?}", grp_type)?;
 
     validate_frame_number(args.frame, frames.len())?;
     if let Some(frame_number) = args.frame {
@@ -46,32 +50,32 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
         } else {
             file_len as u32
         };
-        info!("Analyzing frame {}:", frame_number);
-        info!("- GrpType:  {:?}", frames[frame_number].image_data.grp_type);
-        info!("- X offset: {}", frames[frame_number].x_offset);
-        info!("- Y offset: {}", frames[frame_number].y_offset);
-        info!("- Width:    {}", width);
-        info!("- Height:   {}", frames[frame_number].height);
-        info!("- This frames image data offset: 0x{:0>2X}", frames[frame_number].decoded_image_data_offset());
-        info!("- Next frames image data offset: 0x{:0>2X}", next_offset);
+        writeln!(out, "Analyzing frame {}:", frame_number)?;
+        writeln!(out, "- GrpType:  {:?}", frames[frame_number].image_data.grp_type)?;
+        writeln!(out, "- X offset: {}", frames[frame_number].x_offset)?;
+        writeln!(out, "- Y offset: {}", frames[frame_number].y_offset)?;
+        writeln!(out, "- Width:    {}", width)?;
+        writeln!(out, "- Height:   {}", frames[frame_number].height)?;
+        writeln!(out, "- This frames image data offset: 0x{:0>2X}", frames[frame_number].decoded_image_data_offset())?;
+        writeln!(out, "- Next frames image data offset: 0x{:0>2X}", next_offset)?;
         if frames[frame_number].image_data.grp_type == GrpType::Normal {
             for (i, _) in frames[frame_number].image_data.raw_row_data.iter().enumerate() {
-                info!(
+                writeln!(out, 
                     "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:0>4X}, Absolute offset: 0x{:0>6X}",
                     i, i, frames[frame_number].image_data.row_offsets[i],
                     absolute_row_offset(&frames[frame_number], i),
-                );
+                )?;
             }
         }
         if let Some(row_number) = args.row {
             let i = row_number as usize;
             let row = &frames[frame_number].image_data.raw_row_data[i];
             let start = absolute_row_offset(&frames[frame_number], i);
-            println!();
-            info!(
+            writeln!(out)?;
+            writeln!(out, 
                 "- Row {: >2} (0x{:0>2X}), Relative offset: 0x{:X}, Absolute offset: 0x{:X}",
                 i, i, frames[frame_number].image_data.row_offsets[i], start,
-            );
+            )?;
 
             let mut bytes = "".to_string();
             let mut buf = vec![0u8; row.len()];
@@ -80,16 +84,16 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
             for b in &buf {
                 bytes.push_str(&format!("{:02X} ", b));
             }
-            info!("  Data ({} bytes): {}", row.len(), &bytes);
+            writeln!(out, "  Data ({} bytes): {}", row.len(), &bytes)?;
         }
 
         return Ok(());
     }
-    println!();
-    info!("GRP Header:");
-    info!("- Frame count: {}", header.frame_count);
-    info!("- Max width:   {}", header.max_width);
-    info!("- Max height:  {}", header.max_height);
+    writeln!(out)?;
+    writeln!(out, "GRP Header:")?;
+    writeln!(out, "- Frame count: {}", header.frame_count)?;
+    writeln!(out, "- Max width:   {}", header.max_width)?;
+    writeln!(out, "- Max height:  {}", header.max_height)?;
 
     let mut actual_max_width  = 0;
     let mut actual_max_height = 0;
@@ -107,13 +111,13 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
     }
 
     if actual_max_width > header.max_width || actual_max_height > header.max_height {
-        warn!("⚠ Header max dimensions are less than the actual frame extents!");
-        warn!("- Actual max width:  {}", actual_max_width);
-        warn!("- Actual max height: {}", actual_max_height);
+        writeln!(out, "⚠ Header max dimensions are less than the actual frame extents!")?;
+        writeln!(out, "- Actual max width:  {}", actual_max_width)?;
+        writeln!(out, "- Actual max height: {}", actual_max_height)?;
     } else {
-        info!("✔ Header dimensions correctly describe frame bounds");
+        writeln!(out, "✔ Header dimensions correctly describe frame bounds")?;
     }
-    println!();
+    writeln!(out)?;
 
     // Analyze for gaps
     let used_ranges = used_ranges(&frames, grp_type);
@@ -121,31 +125,31 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
     let duplicates = frames_with_identical_image_data(&frames);
     let duplicates_found = !duplicates.is_empty();
     for indices in duplicates {
-        warn!("⚠ Identical image data found in frames: {:?}", indices);
+        writeln!(out, "⚠ Identical image data found in frames: {:?}", indices)?;
     }
     if !duplicates_found {
-        info!("✔ All frames have unique pixel data");
+        writeln!(out, "✔ All frames have unique pixel data")?;
     }
-    println!();
+    writeln!(out)?;
 
 
     // Check for overlapping ranges
     let overlaps = overlapping_ranges(&used_ranges);
     if !overlaps.is_empty() {
-        debug!("⚠ Overlapping ranges detected:");
+        writeln!(out, "⚠ Overlapping ranges detected:")?;
     }
     for &(earlier, later) in &overlaps {
         let (prev_start, prev_end, prev_label) = &used_ranges[earlier];
         let (curr_start, curr_end, curr_label) = &used_ranges[later];
-        debug!(
+        writeln!(out, 
             "[0x{:0>2X}]-[0x{:0>2X}] ({}) overlaps with [0x{:0>2X}]-[0x{:0>2X}] ({})",
             prev_start, prev_end, prev_label, curr_start, curr_end, curr_label,
-        );
+        )?;
     }
     if overlaps.is_empty() {
-        info!("✔ No overlapping ranges detected");
+        writeln!(out, "✔ No overlapping ranges detected")?;
     }
-    println!();
+    writeln!(out)?;
 
 
     let mut has_printed_header = false;
@@ -155,13 +159,13 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
         if pos < *start {
             any_gaps = true;
             if !has_printed_header {
-                warn!("⚠ Unused data found between GRP sections:");
+                writeln!(out, "⚠ Unused data found between GRP sections:")?;
                 has_printed_header = true;
             }
-            warn!(
+            writeln!(out, 
                 "- Gap from [0x{:0>6X}] to [0x{:0>6X}] ({} bytes)",
                 pos, start, start - pos,
-            );
+            )?;
 
             let mut bytes = "".to_string();
             let mut buf = vec![0u8; (start - pos) as usize];
@@ -170,28 +174,28 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
             for b in &buf {
                 bytes.push_str(&format!("{:02X} ", b));
             }
-            warn!("  Data: {}", &bytes);
+            writeln!(out, "  Data: {}", &bytes)?;
         }
         pos = *end;
     }
     if pos < file_len {
         any_gaps = true;
         if !has_printed_header {
-            warn!("⚠ Unused data found between GRP sections:");
+            writeln!(out, "⚠ Unused data found between GRP sections:")?;
         }
-        warn!(
+        writeln!(out, 
             "- Trailing data from 0x{:0>6X} to end ({} bytes)",
             pos, file_len - pos,
-        );
+        )?;
     }
     if !any_gaps {
-        info!("✔ No unused data found between GRP sections");
+        writeln!(out, "✔ No unused data found between GRP sections")?;
     }
-    println!();
+    writeln!(out)?;
 
 
-    if log::log_enabled!(log::Level::Debug) {
-        debug!("File layout diagram:");
+    if args.layout {
+        writeln!(out, "File layout diagram:")?;
         let mut pos = 0;
         for (start, end, label) in used_ranges {
             if pos < start {
@@ -205,19 +209,19 @@ pub fn analyse_grp(args: &AnalyseArgs) -> Result<()> {
                         bytes.push_str(&format!("{:02X} ", b));
                     }
                 }
-                debug!(
+                writeln!(out, 
                     "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes){}",
                     pos, start, start - pos, &bytes,
-                );
+                )?;
             }
-            debug!("[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label);
+            writeln!(out, "[0x{:0>6X}]-[0x{:0>6X}] {}", start, end - 1, label)?;
             pos = end;
         }
         if pos < file_len {
-            debug!(
+            writeln!(out, 
                 "[0x{:0>6X}]-[0x{:0>6X}] UNUSED ({} bytes)",
                 pos, file_len, file_len - pos,
-            );
+            )?;
         }
     }
 
@@ -341,9 +345,10 @@ mod tests {
 
     fn make_test_args(input_path: &str, frame: Option<u16>) -> AnalyseArgs {
         AnalyseArgs {
-            input: input_path.to_string(),
+            input:  input_path.to_string(),
             frame,
-            row:   None,
+            row:    None,
+            layout: false,
         }
     }
 
@@ -501,11 +506,11 @@ mod tests {
     fn analyses_frame_with_image_data_beyond_64_kib() {
         let temp_dir = tempfile::tempdir().unwrap();
         let (path, _) = write_grp_with_image_data_beyond_64_kib(temp_dir.path());
-        // The offsets are computed in the arguments to info!, which are only evaluated if the
-        // log level is enabled. No logger is installed, so nothing is actually printed.
-        log::set_max_level(log::LevelFilter::Info);
 
         analyse_grp(&make_test_args(&path, None)).expect("expected the whole GRP to be analysed");
+        let mut args = make_test_args(&path, None);
+        args.layout = true;
+        analyse_grp(&args).expect("expected the file layout to be printed");
         analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
         for row in [0, 1] {
             let mut args = make_test_args(&path, Some(0));
@@ -531,10 +536,25 @@ mod tests {
     }
 
     #[test]
+    fn report_contains_the_data_of_the_requested_row() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = write_grp_with_max_height_frame(temp_dir.path());
+        let mut args = make_test_args(&path, Some(0));
+        args.row = Some(254);
+
+        let mut report = Vec::new();
+        analyse_grp_to(&args, &mut report).unwrap();
+
+        let report = String::from_utf8(report).unwrap();
+        // Row 254 starts at 14 (image data) + 2 * 255 (row offsets) + 2 * 254 (earlier rows) = 0x408
+        assert!(report.contains("Absolute offset: 0x408"), "{}", report);
+        assert!(report.contains("Data (2 bytes): 01 FF"), "{}", report);
+    }
+
+    #[test]
     fn analyses_frame_with_max_height() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = write_grp_with_max_height_frame(temp_dir.path());
-        log::set_max_level(log::LevelFilter::Info); // Evaluate the arguments to info!
 
         analyse_grp(&make_test_args(&path, Some(0))).expect("expected frame 0 to be analysed");
         for row in [0, 254] {

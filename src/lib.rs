@@ -117,6 +117,11 @@ pub struct AnalyseArgs {
     /// Print the data of the given row number (0-indexed) of the given frame
     #[arg(long, short = 'r', alias = "analyse-row-number", requires = "frame")]
     pub row: Option<u8>,
+
+    /// Print a diagram of the file layout, showing which
+    /// byte ranges are used by which parts of the GRP
+    #[arg(long, conflicts_with = "frame")]
+    pub layout: bool,
 }
 
 #[derive(Clone, ValueEnum, PartialEq, Debug)]

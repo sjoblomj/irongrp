@@ -174,3 +174,38 @@ fn input_and_output_are_required() {
         assert_eq!(output.status.code(), Some(2), "expected a usage error for {:?}", args);
     }
 }
+
+#[test]
+fn analysis_report_goes_to_stdout_regardless_of_log_level() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+
+    let output = irongrp()
+        .args(["analyse", &grp, "--layout", "--log-level", "error"])
+        .output()
+        .expect("failed to run irongrp");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("GRP type: Uncompressed"), "{:?}", stdout);
+    assert!(stdout.contains("- Frame count: 3"), "{:?}", stdout);
+    assert!(stdout.contains("Frame headers"), "expected the file layout in {:?}", stdout);
+    assert!(output.stderr.is_empty(), "{:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn log_messages_go_to_stderr() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grp = write_test_grp(temp_dir.path(), 3);
+    let out_dir = temp_dir.path().join("out");
+
+    let output = irongrp()
+        .args(["grp-to-png", &grp]).arg(&out_dir)
+        .output()
+        .expect("failed to run irongrp");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty(), "{:?}", String::from_utf8_lossy(&output.stdout));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Conversion complete"), "{:?}", stderr);
+}

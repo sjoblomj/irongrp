@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 
   Flags that do not apply to a subcommand are now rejected, instead of silently ignored.
 - Renamed flags: `--pal-path` to `--palette`, `--use-transparency` to `--transparent`, `--frame-number` to `--frame`, `--compression-type` to `--compression` and `--analyse-row-number` to `--row`. The old names are still accepted. New short forms: `-c` for `--compression`, `-f` for `--frame` and `-r` for `--row`.
+- Log messages are written to stderr instead of stdout.
+- The `analyse` report is written to stdout, independently of `--log-level`, so it can be piped or redirected. Previously parts of it were hidden at `--log-level warn`, and overlapping ranges and the file layout diagram were only shown at `--log-level debug`. Overlapping ranges are now always reported, and the file layout diagram is printed with the new `--layout` flag.
 
 ### Added
 - Ability to specify and load palettes (up to 9) in the yazi integration.

@@ -5,19 +5,18 @@ use irongrp::grp::{grp_to_png, png_to_grp};
 use irongrp::error::InFile;
 use irongrp::{Cli, Commands, Error, Result};
 use log::{error, info};
-use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode};
-use std::io::stdout;
+use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
+use std::io::{stdout, ErrorKind};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    CombinedLogger::init(
-        vec![
-            TermLogger::new(cli.log_level.clone().into(), Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-        ]
-    ).unwrap();
+    // Log to stderr, so that stdout only contains the actual output (the analysis report and
+    // the completion scripts)
+    TermLogger::init(cli.log_level.clone().into(), Config::default(), TerminalMode::Stderr, ColorChoice::Auto)
+        .unwrap();
 
     match run(&cli.command) {
         Ok(()) => ExitCode::SUCCESS,
@@ -54,7 +53,11 @@ fn run(command: &Commands) -> Result<()> {
         Commands::Analyse(args) => {
             require_existing_file(&args.input)?;
 
-            analyse_grp(args)?;
+            match analyse_grp(args) {
+                // The reader of the report has gone away, e.g. when piping it to `head`
+                Err(Error::Io(e)) if e.kind() == ErrorKind::BrokenPipe => return Ok(()),
+                result => result?,
+            }
             info!("Analysis complete in {} ms", time_elapsed(start_time));
         },
 

@@ -57,6 +57,8 @@ This will create an Uncompressed GRP rather than a normal, RLE compressed GRP. D
 irongrp analyse unit/terran/marine.grp
 ```
 
+The report is written to stdout, and log messages to stderr, so the report can be piped or redirected: `irongrp analyse marine.grp --layout > marine.txt`.
+
 ### Analyse a given row of a given frame of a GRP
 ```bash
 irongrp analyse unit/terran/marine.grp --frame 71 --row 15
@@ -114,6 +116,7 @@ Inspects the structure of the GRP file `INPUT`. Also available as `analyse-grp`.
 |-----------------------|------------------------------------------------------------------------------------------------|
 | `-f`, `--frame`       | Only analyse the given frame number (0-indexed)                                                |
 | `-r`, `--row`         | Print the image data of the given row number (0-indexed). Requires `--frame`                   |
+| `--layout`            | Also print a diagram of which byte ranges are used by which parts of the GRP                   |
 
 ### `irongrp completions <SHELL>`
 Writes a shell completion script to stdout.
@@ -154,7 +157,7 @@ IronGRP supports an analysis mode, run with `irongrp analyse <GRP>`, which will 
 - Detects unused "gap" regions
 - Reports overlapping offsets
 - Finds duplicate frames
-- Visualises file layout in the terminal
+- Visualises file layout in the terminal (with `--layout`)
 
 
 ## 🎨 How GRP Files Handle Colour
